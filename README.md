@@ -6,7 +6,7 @@ This solution demonstrates the capabilities provided by all five Catalyst APIs t
 - **inventory**: Receives direct invocation requests sent by the order-processor using the Invocation API to manage inventory state in the Diagrid KV Store through the Catalyst State API.
 - **notifications**: Subscribes to messages published by the order-processor using the Pub/Sub API and subsequently displays those messages through a simple JavaScript user interface.
 - **shipping**: Receives direct invocation requests sent by the order-processor using the Invocation API to simulate the scheduling of order shipments.
-- **payments**: Receives direct invocation requests sent by the order-processor using the Invocation API to process order payment which is sent to the Square API using the Catalyst HTTP output binding.
+- **payments**: Receives direct invocation requests sent by the order-processor using the Invocation API to process order payments which are sent to the Square API using a Catalyst HTTP output binding.
 
 For a live walkthrough: https://youtu.be/VAVQARDlHDo?t=1930
 
