@@ -8,6 +8,8 @@ This solution demonstrates the capabilities provided by all five Catalyst APIs t
 - **shipping**: Receives direct invocation requests sent by the order-processor using the Invocation API to simulate the scheduling of order shipments.
 - **payments**: Receives direct invocation requests sent by the order-processor using the Invocation API to process order payment which is sent to the Square API using the Catalyst HTTP output binding.
 
+For a live walkthrough: https://youtu.be/VAVQARDlHDo?t=1930
+
 ## App prerequisites
 
 The solution is comprised of python services:
