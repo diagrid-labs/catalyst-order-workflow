@@ -114,6 +114,32 @@ def check_appid_status(project_name, appid_name):
         spinner.write(f"Run `diagrid appid get {appid_name} --project {project_name}` and proceed with quickstart once in ready status")
         sys.exit(1)
 
+def create_subscription(project_name, subscription_name, topic_name, scopes, route):
+    with yaspin(text=f"Creating subscription {subscription_name}...") as spinner:
+        try:
+            run_command(f"diagrid subscription create {subscription_name} --component pubsub --topic {topic_name} --scopes {scopes} --route {route} --project {project_name}", check=True)
+            spinner.ok("✅")
+        except subprocess.CalledProcessError as e:
+            spinner.fail("❌")
+            if e.output:
+                spinner.write(f"{e.output}")
+            if e.stderr:
+                spinner.write(f"{e.stderr}")
+            sys.exit(1)
+
+def create_binding(project_name, binding_name):
+    with yaspin(text=f"Creating binding {binding_name}...") as spinner:
+        try:
+            run_command(f"diagrid components apply -f ./catalyst-resources/square-http-binding.yaml", check=True)
+            spinner.ok("✅")
+        except subprocess.CalledProcessError as e:
+            spinner.fail("❌")
+            if e.output:
+                spinner.write(f"{e.output}")
+            if e.stderr:
+                spinner.write(f"{e.stderr}")
+            sys.exit(1)
+
 def set_default_project(project_name):
     with yaspin(text=f"Setting default project to {project_name}...") as spinner:
         try:
@@ -186,8 +212,10 @@ def main():
     check_appid_status(prj_name, "shipping")
 
     # Create pub/sub subscription 
+    create_subscription(prj_name, "notifications-sub", "notifications", "notify", "/notifications")
 
     # Create http output binding 
+    create_binding(prj_name, "square-api")
 
     set_default_project(prj_name)
 

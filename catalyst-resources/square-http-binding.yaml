@@ -9,7 +9,7 @@ spec:
     - name: url
       value: https://connect.squareupsandbox.com/
     - name: securityToken
-      value: Bearer {your-square-api-token}
+      value: Bearer EAAAlxbliuWPW7357cx_imTWI952FaGmXwFk__Yq-WbV4XtFNWielHbztx7B-itx
     - name: securityTokenHeader
       value: Authorization
   scopes:
