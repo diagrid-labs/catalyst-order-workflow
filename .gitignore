@@ -9,7 +9,11 @@
 .LSOverride
 
 # Icon must end with two \r
-Icon
+Icon
+
+# Diagrid python venv
+diagrid-venv
+dev-*.yaml
 
 # Thumbnails
 ._*
@@ -218,7 +222,7 @@ pyrightconfig.json
 .history/
 
 # Built Visual Studio Code Extensions
-*.vsix
+*.vsix==1.16.0
 
 ### VisualStudioCode Patch ###
 # Ignore all local history of files

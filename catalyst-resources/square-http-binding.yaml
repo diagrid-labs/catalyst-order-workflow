@@ -1,0 +1,16 @@
+apiVersion: cra.diagrid.io/v1beta1
+kind: Component
+metadata:
+  name: square-api
+spec:
+  type: bindings.http
+  version: v1
+  metadata:
+    - name: url
+      value: https://connect.squareupsandbox.com/
+    - name: securityToken
+      value: Bearer {your-square-api-token}
+    - name: securityTokenHeader
+      value: Authorization
+  scopes:
+    - payments

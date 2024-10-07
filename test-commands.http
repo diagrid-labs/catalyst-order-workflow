@@ -1,20 +1,21 @@
+
+
 ### Get the current inventory
 GET http://localhost:3002/inventory
 
 ### Delete the current inventory
 DELETE http://localhost:3002/inventory
 
-### Restock
+### Restock inventory
 POST http://localhost:3002/inventory/restock
 
-### Reserve
-POST http://localhost:3002/inventory/reserve
 
-### Submit a payment
+### Test HTTP binding
 POST http://localhost:3003/payments/charge
 Content-Type: application/json
 
 {"id": "test", "customer": "bob", "items": ["oranges"], "total": 12.00}
+
 
 ### Submit a simple order
 POST http://localhost:3000/orders
@@ -28,15 +29,13 @@ Content-Type: application/json
 
 {"customer": "Cecilia", "items": ["kiwi"], "total": 1299.00}
 
-
 ### Get the status of an order
-GET http://localhost:3000/orders/order_bob_2n3yd
-
+GET http://localhost:3000/orders/insert-order-id
 
 ### Approve an order
-POST http://localhost:3000/orders/order_cecilia_e83nq/approve
+POST http://localhost:3000/orders/insert-order-id/approve
 Content-Type: application/json
 
-{"approver": "Kendall", "approved": true}
+{"approver": "your-name", "approved": true}
 
 

@@ -1,6 +1,7 @@
 dapr==1.14.0
 Flask==3.0.3
 pydantic==2.9.2
-grpcio==1.63.0
+grpcio>=1.66.2
 asgiref==3.6.0
 grpcio-tools
+six==1.16.0
