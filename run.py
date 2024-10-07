@@ -127,7 +127,7 @@ def create_subscription(project_name, subscription_name, topic_name, scopes, rou
                 spinner.write(f"{e.stderr}")
             sys.exit(1)
 
-def create_binding(project_name, binding_name):
+def create_binding(binding_name):
     with yaspin(text=f"Creating binding {binding_name}...") as spinner:
         try:
             run_command(f"diagrid components apply -f ./catalyst-resources/square-http-binding.yaml", check=True)
@@ -199,6 +199,8 @@ def main():
 
     create_project(prj_name)
 
+    set_default_project(prj_name)
+
     create_appid(prj_name, "inventory")
     create_appid(prj_name, "notify")
     create_appid(prj_name, "order-processor")
@@ -215,9 +217,7 @@ def main():
     create_subscription(prj_name, "notifications-sub", "notifications", "notify", "/notifications")
 
     # Create http output binding 
-    create_binding(prj_name, "square-api")
-
-    set_default_project(prj_name)
+    create_binding("square-api")
 
     # Check if the dev file already exists and remove it if it does
     if os.path.isfile(config_file):
