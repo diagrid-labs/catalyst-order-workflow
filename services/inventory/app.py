@@ -10,7 +10,7 @@ from dapr.clients.grpc._state import StateItem
 from flask import Flask, g, request, jsonify
 
 APP_PORT = os.getenv("APP_PORT", "3002")
-STATESTORE_NAME = os.getenv("STATESTORE_NAME", "inventory")
+STATESTORE_NAME = os.getenv("STATESTORE_NAME", "kvstore")
 
 app = Flask(__name__)
 
