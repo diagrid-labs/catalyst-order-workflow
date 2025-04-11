@@ -13,7 +13,6 @@ Icon
 
 # Diagrid python venv
 diagrid-venv
-dev-*.yaml
 
 # Thumbnails
 ._*

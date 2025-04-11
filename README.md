@@ -33,26 +33,6 @@ Once you have completed the above steps, you are ready to connect to the Square 
 
 > NOTE: The application code calls out to the Square Payment API and will randomly select a failing test card or a successful test card to simulate various workflow paths.
 
-## Deploy Catalyst resources
-
-Replace `unique-project-name` with a name for your workflow project
-
-```bash
-export WORKFLOW_PROJECT_NAME="unique-project-name"
-```
-
-Install dependencies for the python creation script which will be used to deploy the majority of Catalyst resources needed for this demo.
-
-```bash
-pip3 install yaspin
-```
-
-Run this script to deploy a catalyst project, scaffold all of the required App IDs and components, and scaffold the dev config file
-
-```bash
-python3 run.py
-```
-
 ## Build instructions
 
 The build apps file will go through each application directory and run any app commands necessary to prepare the applications to run. Make sure it is executable using the below command:
@@ -69,10 +49,10 @@ Run the script:
 
 ## Connect local app using dev config file
 
-After the above script runs to completion, use the dev config file to run the local apps and connect to Catalyst
+Replace `unique-project-name` with a name for your workflow project
 
 ```bash
-diagrid dev start
+diagrid dev run --file dev-order-workflow.yaml --project <unique-project-name>
 ```
 
 ## Use the APIs

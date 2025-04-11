@@ -1,0 +1,7 @@
+apiVersion: cra.diagrid.io/v1beta1
+kind: KVStore
+metadata:
+  name: kvstore
+spec:
+  createComponent: true
+

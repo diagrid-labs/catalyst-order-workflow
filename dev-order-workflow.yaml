@@ -1,0 +1,48 @@
+version: 1
+common:
+    appLogDestination: console
+    resourcesPaths:
+        - catalyst-resources/managed-kvstore.yaml
+        - catalyst-resources/managed-pubsub.yaml
+        - catalyst-resources/subscription-notifications-sub.yaml
+
+    enableAppHealthCheck: true
+    appHealthCheckPath: /healthz
+    appHealthProbeInterval: 5
+    appHealthProbeTimeout: 500
+    appHealthThreshold: 3
+
+    logLevel: info
+
+    appProtocol: http
+apps:
+    - appID: inventory
+      appDirPath: ./services/inventory
+      appPort: 3002
+      command:
+      - python3
+      - app.py
+    - appID: notify
+      appDirPath: ./services/notifications
+      appPort: 3001
+      command:
+      - python3
+      - app.py
+    - appID: order-processor
+      appDirPath: ./services/order-processor
+      appPort: 3000
+      command:
+      - python3
+      - app.py
+    - appID: payments
+      appDirPath: ./services/payments
+      appPort: 3003
+      command:
+      - python3
+      - app.py
+    - appID: shipping
+      appDirPath: ./services/shipping
+      appPort: 3004
+      command:
+      - python3
+      - app.py
