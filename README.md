@@ -9,9 +9,8 @@ This solution demonstrates the capabilities provided by all five Catalyst APIs t
 - **payments**: Receives direct invocation requests sent by the order-processor using the Invocation API to mock the processing of order payments.
 
 ## App prerequisites
-
-The solution is comprised of python services:
-
+- [Sign up](https://catalyst.diagrid.io) for Diagrid Catalyst
+- Install latest [Diagrid CLI](https://docs.diagrid.io/catalyst/references/cli-reference/intro#installing-the-cli)
 - Install [Python3](https://www.python.org/downloads/)
 
 The build apps file will go through each application directory and run any app commands necessary to prepare the applications to run. Make sure it is executable using the below command:
