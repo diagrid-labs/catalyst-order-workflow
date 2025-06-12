@@ -11,5 +11,17 @@
     },
     "autopep8.args": [
         "--max-line-length=119"
-    ]
+    ],
+    "redisXplorer.config": {
+        "profiles": [
+            {
+                "name": "dapr-local",
+                "host": "127.0.0.1",
+                "accessKey": "",
+                "filter": "*",
+                "port": "6379"
+            }
+        ],
+        "scanLimit": 200
+    }
 }

@@ -1,0 +1,26 @@
+version: 1
+common:
+  logLevel: error
+  appLogDestination: "console"
+  daprdLogDestination: "console"
+  resourcesPaths: ["./resources"]
+apps:
+  - appID: inventory
+    appPort: 3002
+    appDirPath: ./services/inventory
+    command: ["python3", "app.py"]
+  - appID: order-processor
+    appDirPath: ./services/order-processor
+    command: ["python3", "app.py"]
+  - appID: payments
+    appPort: 3003
+    appDirPath: ./services/payments
+    command: ["python3", "app.py"]
+  - appID: notifications
+    appPort: 8080
+    appDirPath: ./services/notifications
+    command: ["npm", "run", "dev"]
+  - appID: shipping
+    appPort: 3004
+    appDirPath: ./services/shipping
+    command: ["python3", "app.py"]

@@ -11,12 +11,11 @@
 # Icon must end with two \r
 Icon
 
-# Diagrid python venv
-diagrid-venv
-dev-*.yaml
-
 # Thumbnails
 ._*
+
+# Dapr 
+.dapr
 
 # Files that might appear in the root of a volume
 .DocumentRevisions-V100

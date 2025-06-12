@@ -3,15 +3,14 @@ import logging
 import os
 import random
 import string
-from dataclasses import dataclass
-from datetime import timedelta
-
 import dapr.ext.workflow as wf
 from dapr.clients import DaprClient
 from flask import Flask, request, url_for
 from markupsafe import escape
+from dataclasses import dataclass
+from datetime import timedelta
 
-APP_PORT = os.getenv("APP_PORT", "3000")
+APP_PORT = os.getenv("APP_PORT", "3006")
 PUBSUB_NAME = os.getenv("PUBSUB_NAME", "pubsub")
 TOPIC_NAME = os.getenv("TOPIC_NAME", "notifications")
 
@@ -25,9 +24,13 @@ app = Flask(__name__)
 class Order:
     id: str
     customer: str
-    items: list
+    item: str
     total: float
 
+@dataclass
+class Approval:
+    approver: str
+    approved: bool
 
 @dataclass
 class OrderResult:
@@ -35,52 +38,42 @@ class OrderResult:
     success: bool
     message: str
 
-
 @dataclass
 class InventoryResult:
     id: str
     success: bool
     message: str
 
-
 @dataclass
 class PaymentResult:
+    id: str
     success: bool
     message: str
 
-
-@dataclass
-class Approval:
-    approver: str
-    approved: bool
-
-    @staticmethod
-    def from_dict(dict):
-        return Approval(**dict)
-
+# Dapr Workflow Definition for Order Processing
 
 def process_order_workflow(ctx: wf.DaprWorkflowContext, order: Order):
-    yield ctx.call_activity(notify, input=f"Received order for {order.customer}: {order.items}. Total = {order.total}")
+    yield ctx.call_activity(notify, input=f"Processing order for {order.customer}. Item: {order.item}, Total: {order.total}")
 
     # Call into the inventory service to reserve the items in this order
     result = yield ctx.call_activity(reserve_inventory, input=order)
+    
     if not result.success:
-        yield ctx.call_activity(notify, input=f"Inventory failed for order: {result.message}")
+        yield ctx.call_activity(notify, input=f"Failed to reserve inventory: {result.message}")
         return OrderResult(order.id, False, result.message)
 
-    yield ctx.call_activity(notify, input=f"Reserved inventory for order: {order.items}")
+    yield ctx.call_activity(notify, input=f"Reserved inventory: {order.item}")
 
     # Orders over $1,000 require human approval
     if order.total >= APPROVAL_THRESHOLD:
         approval_deadline = ctx.current_utc_datetime + APPROVAL_TIMEOUT
-        yield ctx.call_activity(
-            notify,
-            input=f"Waiting for approval since order >= {APPROVAL_THRESHOLD}. Deadline = {approval_deadline}.")
+        yield ctx.call_activity(notify, input=f"Waiting for approval since order >= {APPROVAL_THRESHOLD}. Deadline = {approval_deadline}.")
 
         # Block the workflow on either an approval event or a timeout
         approval_task = ctx.wait_for_external_event("approval")
         timeout_expired_task = ctx.create_timer(approval_deadline)
         winner = yield wf.when_any([approval_task, timeout_expired_task])
+
         if winner == timeout_expired_task:
             message = "Approval deadline expired."
             yield ctx.call_activity(notify, input=message)
@@ -95,6 +88,8 @@ def process_order_workflow(ctx: wf.DaprWorkflowContext, order: Order):
 
         yield ctx.call_activity(notify, input=f"Order was approved by {approval.approver}.")
 
+    yield ctx.call_activity(notify, input="Attempting to take payment")
+
     # Submit the order to the payment service
     try:
         result = yield ctx.call_activity(submit_payment, input=order)
@@ -105,7 +100,9 @@ def process_order_workflow(ctx: wf.DaprWorkflowContext, order: Order):
         yield ctx.call_activity(notify, input=f"Error taking payment: {str(e)}")
         raise
 
-    yield ctx.call_activity(notify, input="Payment was processed successfully")
+    yield ctx.call_activity(notify, input="Payment processed")
+
+    yield ctx.call_activity(notify, input="Order submitted for shipping")
 
     # Submit the order for shipping
     try:
@@ -119,46 +116,31 @@ def process_order_workflow(ctx: wf.DaprWorkflowContext, order: Order):
         # Allow the workflow to fail with the original failure details
         raise
 
-    yield ctx.call_activity(notify, input="Order submitted for shipping")
+    yield ctx.call_activity(notify, input="Shipment scheduled")
 
-    yield ctx.call_activity(notify, input=f"Orer completed: {order.customer}: {order.items}. Total = {order.total}")
+    yield ctx.call_activity(notify, input=f"Order processed for {order.customer}. Item: {order.item}, Total: {order.total}")
 
-    return OrderResult(order.id, True, "Order processed successfully")
-
+    return OrderResult(order.id, True, "Order processed")
 
 def notify(ctx: wf.WorkflowActivityContext, message: str):
     logging.info(f"Sending notification: {message}")
     with DaprClient() as d:
         d.publish_event(PUBSUB_NAME, TOPIC_NAME, json.dumps({
             "order_id": ctx.workflow_id,
-            "message": message
+            "message": message,
+            "data-content-type": "application/json"
         }))
 
 
 def reserve_inventory(_, order: Order) -> InventoryResult:
     logging.info(f"Reserving inventory for order: {order}")
     with DaprClient() as d:
-        resp = d.invoke_method("inventory", "inventory/reserve",  http_verb="POST",  data=json.dumps(order.__dict__))
+        resp = d.invoke_method("inventory", "api/v1/inventory/reserve",  http_verb="POST",  data=json.dumps(order.__dict__))
         if resp.status_code != 200:
             raise Exception(f"Error calling inventory service: {resp.status_code}")
         inventory_result = InventoryResult(**json.loads(resp.data.decode("utf-8")))
         logging.info(f"Inventory result: {inventory_result}")
         return inventory_result
-
-
-def submit_payment(_, order: Order) -> PaymentResult:
-    logging.info(f"Submitting payment for order: {order}")
-    with DaprClient() as d:
-        resp = d.invoke_method("payments", "payments/charge",  http_verb="POST",  data=json.dumps(order.__dict__))
-        payment_result = PaymentResult(**json.loads(resp.data.decode("utf-8")))
-
-        if resp._status_code != 200:
-            if 'declined' not in payment_result.message:
-                raise Exception(f"Error calling payment service: {resp.status_code}: {resp.text()}")
-
-        logging.info(f"Payment result: {payment_result}")
-        return payment_result
-
 
 def submit_order_to_shipping(_, order: Order):
     logging.info(f"Submitting order to shipping: {order}")
@@ -167,11 +149,23 @@ def submit_order_to_shipping(_, order: Order):
         if resp.status_code != 200:
             raise Exception(f"Error calling shipping service: {resp.status_code}: {resp.text()}")
 
+def submit_payment(_, order: Order) -> PaymentResult:
+    logging.info(f"Submitting payment for order: {order}")
+    with DaprClient() as d:
+        resp = d.invoke_method("payments", "api/v1/payments",  http_verb="POST",  data=json.dumps(order.__dict__))
+        payment_result = PaymentResult(**json.loads(resp.data.decode("utf-8")))
+
+        if resp._status_code != 201:
+            if 'declined' not in payment_result.message:
+                raise Exception(f"Error calling payment service: {resp.status_code}: {resp.text()}")
+
+        logging.info(f"Payment result: {payment_result}")
+        return payment_result
 
 def refund_payment(_, order: Order):
     logging.info(f"Refunding payment for order: {order}")
     with DaprClient() as d:
-        resp = d.invoke_method("payments", "payments/refund",  http_verb="POST",  data=json.dumps(order.__dict__))
+        resp = d.invoke_method("payments", f"api/v1/payments/{order.id}/refunds",  http_verb="POST",  data=json.dumps(order.__dict__))
         if resp.status_code != 200:
             raise Exception(f"Error calling payment service: {resp.status_code}: {resp.text()}")
 
@@ -183,18 +177,18 @@ def submit_order():
     request_data = request.get_json()
     if not request_data:
         return """Invalid request. Should be in the form of {
-            \"customer\": \"joe\", \"items\": [\"apples\", \"oranges\"], \"total\": 100.0}""", 400
+            \"customer\": \"joe\", \"item\": \"apples\", \"total\": 100.0}""", 400
     if not request_data.get("customer"):
         return "Missing customer name", 400
-    if not request_data.get("items"):
-        return "Missing items", 400
+    if not request_data.get("item"):
+        return "Missing item", 400
     if not request_data.get("total"):
         return "Missing total", 400
 
     order = Order(
         None,
         request_data.get("customer"),
-        request_data.get("items"),
+        request_data.get("item"),
         request_data.get("total"))
 
     # Generate a unique ID for this order
@@ -208,7 +202,9 @@ def submit_order():
         instance_id=order.id)
 
     logging.info(f"Started workflow instance: {instance_id}")
-    return f"Order received. ID = '{escape(instance_id)}'", 202, {
+    
+    return json.dumps({"instance_id": instance_id}), 202, {
+        'Content-Type': 'application/json',
         'Location': url_for('check_order_status', order_id=instance_id, _external=True)
     }
 
@@ -224,7 +220,7 @@ def check_order_status(order_id):
     order = Order(
         order_info.get('id'),
         order_info.get('customer'),
-        order_info.get('items'),
+        order_info.get('item'),
         order_info.get('total'))
     resp = {
         "id": state.instance_id,
@@ -291,7 +287,7 @@ def main():
     wf_runtime.start()  # non-blocking
 
     # Start the Flask app server
-    app.run(port=APP_PORT, debug=False, use_reloader=False)
+    app.run(host='0.0.0.0', port=APP_PORT, debug=False, use_reloader=False)
 
     # Stop the workflow runtime to allow the process to terminate
     wf_runtime.shutdown()

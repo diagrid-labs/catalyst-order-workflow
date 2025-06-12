@@ -1,0 +1,11 @@
+apiVersion: dapr.io/v2alpha1
+kind: Subscription
+metadata:
+  name: notifications
+spec:
+  topic: notifications
+  routes:
+    default: /notifications
+  pubsubname: pubsub
+scopes:
+  - notifications
