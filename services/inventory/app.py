@@ -64,6 +64,9 @@ def clear_inventory():
 
 @app.route("/api/v1/inventory/restock", methods=["POST"])
 def restock_inventory():
+    """Destructively set every SKU to 100. Contrast with `/reposition`,
+    which is additive.
+    """
     try:
         with DaprClient() as d:
             state_items = [
@@ -71,7 +74,7 @@ def restock_inventory():
                 for item_key in INVENTORY_ITEMS
             ]
             d.save_bulk_state(store_name=STATESTORE_NAME, states=state_items)
-        logger.info("Inventory restocked successfully")
+        logger.info("Inventory restocked (reset to 100 for all SKUs)")
         return jsonify({"message": "Inventory has been restocked."})
     except grpc.RpcError as err:
         logger.error(f"Error restocking inventory: {err.details()}")
@@ -79,6 +82,29 @@ def restock_inventory():
             jsonify({"error": "Internal Server Error",
                      "message": "Failed to restock inventory"}), 500
         )
+
+
+@app.route("/api/v1/inventory/reposition", methods=["POST"])
+def reposition_inventory():
+    """Increase stock by the given quantities. Contrast with `/restock`,
+    which destructively resets every SKU to a fixed value.
+    """
+    if not request.is_json:
+        return make_response(jsonify({"error": "Request must be JSON"}), 400)
+    body = request.json or {}
+    items = body.get("items") or {}
+    if not items:
+        return make_response(jsonify({"error": "items required"}), 400)
+
+    updated = {}
+    with DaprClient() as d:
+        for sku, qty in items.items():
+            resp = d.get_state(STATESTORE_NAME, sku.lower())
+            current = int(resp.data.decode("utf-8")) if resp.data else 0
+            new_qty = current + int(qty)
+            d.save_state(STATESTORE_NAME, sku.lower(), str(new_qty))
+            updated[sku] = new_qty
+    return jsonify({"updated": updated})
 
 
 @app.route("/api/v1/inventory/reserve", methods=["POST"])
