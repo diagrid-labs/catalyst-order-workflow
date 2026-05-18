@@ -3,6 +3,7 @@ import os
 
 import grpc
 from dapr.clients import DaprClient
+from dapr.clients.grpc._request import TransactionalStateOperation
 from dapr.clients.grpc._state import StateItem
 from flask import Flask, jsonify, make_response, request
 
@@ -107,55 +108,103 @@ def reposition_inventory():
     return jsonify({"updated": updated})
 
 
+RESERVE_MAX_RETRIES = 5
+
+
+def _reserve_atomic(d: DaprClient, sku: str, qty: int = 1):
+    """Decrement stock by `qty` using an etag-guarded transaction.
+
+    Returns (new_stock, error) where error is one of None, "not_found",
+    "out_of_stock", or "conflict". The decrement is etag-guarded so two
+    concurrent reservations cannot both succeed against the same prior
+    stock value; if the etag is stale the transaction aborts and we retry,
+    giving up with "conflict" after RESERVE_MAX_RETRIES.
+    """
+    sku_key = sku.lower()
+    for _ in range(RESERVE_MAX_RETRIES):
+        stock_resp = d.get_state(STATESTORE_NAME, sku_key)
+        if not stock_resp.data:
+            return None, "not_found"
+        try:
+            stock = int(stock_resp.data.decode("utf-8"))
+        except (AttributeError, ValueError):
+            return None, "not_found"
+        if stock < qty:
+            return None, "out_of_stock"
+        try:
+            d.execute_state_transaction(
+                store_name=STATESTORE_NAME,
+                operations=[
+                    TransactionalStateOperation(
+                        key=sku_key,
+                        data=str(stock - qty),
+                        etag=stock_resp.etag or None,
+                    ),
+                ],
+            )
+            return stock - qty, None
+        except grpc.RpcError as err:
+            logger.info(f"Retrying reservation for {sku_key}: {err.details()}")
+    return None, "conflict"
+
+
+def _parse_reserve_order(payload):
+    """Validate a reserve request body. Returns (order_id, item, qty, error)
+    where `error` is a Flask response on failure and None on success.
+    """
+    def bad(msg):
+        return None, None, None, make_response(
+            jsonify({"error": "Bad Request", "message": msg}), 400
+        )
+
+    if not isinstance(payload, dict):
+        return bad("Invalid order format")
+    order_id = payload.get("id")
+    item = payload.get("item")
+    if not order_id or not item:
+        return bad("Invalid order format")
+    if not isinstance(item, str):
+        return bad("item must be a string")
+    try:
+        qty = int(payload.get("qty", 1))
+    except (TypeError, ValueError):
+        return bad("qty must be an integer")
+    if qty < 1:
+        return bad("qty must be >= 1")
+    return order_id, item, qty, None
+
+
 @app.route("/api/v1/inventory/reserve", methods=["POST"])
 def reserve_inventory():
     if not request.is_json:
         return make_response(
             jsonify({"error": "Bad Request", "message": "Request must be JSON"}), 400
         )
+    order_id, item, qty, err_resp = _parse_reserve_order(request.json)
+    if err_resp is not None:
+        return err_resp
 
-    order = request.json
-    if not order or "item" not in order or "id" not in order:
-        return make_response(
-            jsonify({"error": "Bad Request", "message": "Invalid order format"}), 400
-        )
-
-    item = order["item"]
-    order_id = order["id"]
-
-    logger.info(f"Processing inventory reservation for order {order_id}: {item}")
+    logger.info(f"Processing inventory reservation for order {order_id}: {item} x{qty}")
 
     try:
         with DaprClient() as d:
-            state_response = d.get_state(STATESTORE_NAME, item.lower())
-            if not state_response.data:
-                return jsonify({
-                    "id": order_id,
-                    "success": False,
-                    "message": f"Item {item} not found in inventory",
-                })
-
-            try:
-                quantity = int(state_response.data.decode("utf-8"))
-            except (AttributeError, ValueError) as e:
-                logger.error(f"Error processing item {item}: {e}")
-                return jsonify({
-                    "id": order_id,
-                    "success": False,
-                    "message": f"Error processing item {item}: {str(e)}",
-                })
-
-            if not quantity or quantity <= 0:
-                return jsonify({
-                    "id": order_id,
-                    "success": False,
-                    "message": f"Item {item} is out of stock",
-                })
-
+            new_stock, err = _reserve_atomic(d, item, qty=qty)
+            if err == "not_found":
+                return jsonify({"id": order_id, "success": False,
+                                "message": f"Item {item} not found in inventory"})
+            if err == "out_of_stock":
+                return jsonify({"id": order_id, "success": False,
+                                "message": f"Item {item} is out of stock"})
+            if err == "conflict":
+                return make_response(
+                    jsonify({"id": order_id, "success": False,
+                             "message": "Too much contention; please retry"}),
+                    503,
+                )
             return make_response(jsonify({
-                "id": order_id,
-                "success": True,
+                "id": order_id, "success": True,
                 "message": "Item reserved successfully",
+                "remaining": new_stock,
             }))
     except grpc.RpcError as err:
         logger.error(f"Error reserving inventory: {err.details()}")
