@@ -26,6 +26,7 @@ class Order:
     customer: str
     item: str
     total: float
+    qty: int = 1
 
 @dataclass
 class Approval:
@@ -185,11 +186,19 @@ def submit_order():
     if not request_data.get("total"):
         return "Missing total", 400
 
+    try:
+        qty = int(request_data.get("qty", 1))
+    except (TypeError, ValueError):
+        return "qty must be an integer", 400
+    if qty < 1:
+        return "qty must be >= 1", 400
+
     order = Order(
         None,
         request_data.get("customer"),
         request_data.get("item"),
-        request_data.get("total"))
+        request_data.get("total"),
+        qty)
 
     # Generate a unique ID for this order
     random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
@@ -221,7 +230,8 @@ def check_order_status(order_id):
         order_info.get('id'),
         order_info.get('customer'),
         order_info.get('item'),
-        order_info.get('total'))
+        order_info.get('total'),
+        order_info.get('qty', 1))
     resp = {
         "id": state.instance_id,
         "details": order.__dict__,
