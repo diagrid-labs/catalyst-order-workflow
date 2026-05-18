@@ -37,8 +37,10 @@ through a `trigger_reposition` tool.
 - **LLM via Catalyst Conversation API.** The LLM endpoint, model, and key
   live in a Dapr Conversation component (`resources/llm-provider.yaml`).
   Swapping providers (OpenAI, Ollama, Anthropic, …) is a YAML edit; no
-  application code changes. The component in this demo points at local
-  Ollama (`qwen2.5:7b`) at `http://localhost:11434/v1`.
+  application code changes. The component in this demo points at an
+  in-cluster Ollama (`qwen2.5:7b`) deployed via the `otwld/ollama` Helm
+  chart and exposed as `ollama.ollama.svc.cluster.local:11434`. The
+  values used live in `deploy/ollama/values.yaml`.
 
 ### Parameters (configurable via env / component metadata)
 | Setting | Default | Where |
@@ -47,7 +49,7 @@ through a `trigger_reposition` tool.
 | Forecast horizon | 6 min | `HORIZON_MIN` env (inventory service + agent) |
 | Inventory service app-id (for service invocation) | `inventory` | `INVENTORY_APP_ID` env (agent) |
 | State store | `statestore` | `STATESTORE_NAME` env (both services) |
-| LLM model / endpoint | qwen2.5:7b @ localhost:11434/v1 | `resources/llm-provider.yaml` |
+| LLM model / endpoint | qwen2.5:7b @ ollama.ollama.svc.cluster.local:11434/v1 | `resources/llm-provider.yaml` |
 | SKUs | `orange, apple, pear, kiwi` | inventory service |
 
 ## Implementation
@@ -148,7 +150,7 @@ spec:
     - name: model
       value: qwen2.5:7b
     - name: endpoint
-      value: http://localhost:11434/v1
+      value: http://ollama.ollama.svc.cluster.local:11434/v1
 scopes:
   - inventory-agent
 ```
@@ -208,13 +210,18 @@ triggered via HTTP.
 ## Running the demo
 
 ```bash
-# One-time
-curl https://ollama.com/install.sh | sh
-ollama pull qwen2.5:7b
+# One-time — deploy Ollama into the onebox cluster via the otwld chart.
+# qwen2.5:7b (~4.7 GB) is pulled into the PVC on first pod start; subsequent
+# restarts reuse the cached blob. See deploy/ollama/values.yaml.
+helm repo add otwld https://helm.otwld.com/ && helm repo update otwld
+helm upgrade --install ollama otwld/ollama \
+  --kube-context kind-onebox-cp \
+  --namespace ollama --create-namespace \
+  -f deploy/ollama/values.yaml
+kubectl --context kind-onebox-cp -n ollama rollout status deploy/ollama
 ./build-apps.sh
 
 # Each session
-ollama serve &                                                # local LLM
 diagrid dev run -f dapr.yaml --project $WORKFLOW_PROJECT_NAME # services
 curl -X POST http://localhost:3002/api/v1/inventory/restock   # seed stock
 ./order-generator.sh -r 1 &                                   # drive sales

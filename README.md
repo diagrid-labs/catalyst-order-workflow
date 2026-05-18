@@ -52,8 +52,16 @@ A `test.rest` file is available at the root of this repository and can be used w
 The `inventory-agent` service exposes the standard dapr-agents HTTP surface on port `3005`. Trigger a run with a natural-language task and poll for the result:
 
 ```bash
-# 1. Make sure an LLM is reachable. The bundled component points at local Ollama.
-ollama pull qwen2.5:7b && ollama serve &
+# 1. Make sure an LLM is reachable. The bundled component points at an
+#    in-cluster Ollama deployed via the otwld/ollama Helm chart. See
+#    deploy/ollama/values.yaml for the values used.
+helm repo add otwld https://helm.otwld.com/ && helm repo update otwld
+helm upgrade --install ollama otwld/ollama \
+  --kube-context kind-onebox-cp \
+  --namespace ollama --create-namespace \
+  -f deploy/ollama/values.yaml
+# First pod startup pulls qwen2.5:7b (~4.7 GB) into the PVC — wait for Ready.
+kubectl --context kind-onebox-cp -n ollama rollout status deploy/ollama
 
 # 2. Drive some sales so the forecasting tools have data to work with.
 curl -X POST http://localhost:3002/api/v1/inventory/restock

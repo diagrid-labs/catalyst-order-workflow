@@ -11,6 +11,6 @@ spec:
     - name: model
       value: qwen2.5:7b
     - name: endpoint
-      value: http://localhost:11434/v1
+      value: http://ollama.ollama.svc.cluster.local:11434/v1
 scopes:
   - inventory-agent
