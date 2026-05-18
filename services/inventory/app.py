@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from uuid import uuid4
@@ -11,8 +12,18 @@ from flask import Flask, jsonify, make_response, request
 
 from order_state import (
     STATESTORE_NAME,
+    now_iso,
     read_active_orders,
     read_order,
+)
+from sales_state import (
+    HORIZON_MIN,
+    SMA_WINDOW_MIN,
+    _decode_history,
+    encode_appended,
+    forecast,
+    sales_key,
+    summarize,
 )
 from workflows import (
     deliver_order,
@@ -22,6 +33,8 @@ from workflows import (
 )
 
 APP_PORT = int(os.getenv("APP_PORT", 3002))
+PUBSUB_NAME = os.getenv("PUBSUB_NAME", "pubsub")
+SALES_TOPIC = os.getenv("SALES_TOPIC", "sales")
 
 app = Flask(__name__)
 
@@ -125,13 +138,12 @@ RESERVE_MAX_RETRIES = 5
 
 
 def _reserve_atomic(d: DaprClient, sku: str, qty: int = 1):
-    """Decrement stock by `qty` using an etag-guarded transaction.
+    """Decrement stock by `qty` and append a sale to history in one transaction.
 
     Returns (new_stock, error) where error is one of None, "not_found",
-    "out_of_stock", or "conflict". The decrement is etag-guarded so two
-    concurrent reservations cannot both succeed against the same prior
-    stock value; if the etag is stale the transaction aborts and we retry,
-    giving up with "conflict" after RESERVE_MAX_RETRIES.
+    "out_of_stock", or "conflict". Both writes share a single transaction with
+    per-key etags; if either etag is stale the transaction aborts and we retry,
+    so concurrent reservations cannot double-decrement nor drop a sale entry.
     """
     sku_key = sku.lower()
     for _ in range(RESERVE_MAX_RETRIES):
@@ -144,6 +156,11 @@ def _reserve_atomic(d: DaprClient, sku: str, qty: int = 1):
             return None, "not_found"
         if stock < qty:
             return None, "out_of_stock"
+
+        history_resp = d.get_state(STATESTORE_NAME, sales_key(sku_key))
+        history = _decode_history(history_resp)
+        encoded = encode_appended(history, qty, now_iso())
+
         try:
             d.execute_state_transaction(
                 store_name=STATESTORE_NAME,
@@ -152,6 +169,11 @@ def _reserve_atomic(d: DaprClient, sku: str, qty: int = 1):
                         key=sku_key,
                         data=str(stock - qty),
                         etag=stock_resp.etag or None,
+                    ),
+                    TransactionalStateOperation(
+                        key=sales_key(sku_key),
+                        data=encoded,
+                        etag=history_resp.etag or None,
                     ),
                 ],
             )
@@ -214,6 +236,19 @@ def reserve_inventory():
                              "message": "Too much contention; please retry"}),
                     503,
                 )
+
+            d.publish_event(
+                pubsub_name=PUBSUB_NAME,
+                topic_name=SALES_TOPIC,
+                data=json.dumps({
+                    "sku": item.lower(),
+                    "qty": qty,
+                    "ts": now_iso(),
+                    "order_id": order_id,
+                }),
+                data_content_type="application/json",
+            )
+
             return make_response(jsonify({
                 "id": order_id, "success": True,
                 "message": "Item reserved successfully",
@@ -231,6 +266,27 @@ def reserve_inventory():
             jsonify({"error": "Internal Server Error",
                      "message": f"Unexpected error: {str(e)}"}), 500
         )
+
+
+@app.route("/api/v1/inventory/sales/history", methods=["GET"])
+def get_sales_history():
+    sku = request.args.get("sku")
+    if not sku:
+        return make_response(jsonify({"error": "sku required"}), 400)
+    window_min = int(request.args.get("window_min", SMA_WINDOW_MIN))
+    with DaprClient() as d:
+        return jsonify(summarize(d, sku, window_min))
+
+
+@app.route("/api/v1/inventory/forecast", methods=["GET"])
+def get_forecast():
+    sku = request.args.get("sku")
+    if not sku:
+        return make_response(jsonify({"error": "sku required"}), 400)
+    horizon_min = int(request.args.get("horizon_min", HORIZON_MIN))
+    window_min = int(request.args.get("window_min", SMA_WINDOW_MIN))
+    with DaprClient() as d:
+        return jsonify(forecast(d, sku, horizon_min, window_min))
 
 
 @app.route("/api/v1/inventory/orders", methods=["POST"])
