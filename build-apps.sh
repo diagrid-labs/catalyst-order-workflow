@@ -1,14 +1,12 @@
-cd ./services/inventory
-pip3 install -r requirements.txt
+#!/usr/bin/env bash
+set -euo pipefail
 
-cd ../notifications
-pip3 install -r requirements.txt
+cd "$(dirname "$0")"
 
-cd ../order-processor
-pip3 install -r requirements.txt
+# Python services
+for svc in inventory order-processor payments shipping inventory-agent; do
+    (cd "services/$svc" && pip3 install -r requirements.txt)
+done
 
-cd ../payments
-pip3 install -r requirements.txt
-
-cd ../shipping
-pip3 install -r requirements.txt
+# Node service
+(cd services/notifications && npm install)

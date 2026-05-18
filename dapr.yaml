@@ -24,3 +24,7 @@ apps:
     appPort: 3004
     appDirPath: ./services/shipping
     command: ["python3", "app.py"]
+  - appID: inventory-agent
+    appPort: 3005
+    appDirPath: ./services/inventory-agent
+    command: ["python3", "app.py"]

@@ -58,3 +58,31 @@ Content-Type: application/json
   "amendments": {"orange": 12, "apple": 3}
 }
 
+### Ask the agent about stock
+// @name agent_stock
+POST http://localhost:3005/agent/run
+Content-Type: application/json
+
+{"task": "What is the current inventory?"}
+
+### Get the result of the previous run
+@instance_id = {{agent_stock.response.body.instance_id}}
+GET http://localhost:3005/agent/instances/{{instance_id}}
+
+### Ask the agent for a forecast
+POST http://localhost:3005/agent/run
+Content-Type: application/json
+
+{"task": "Forecast demand for orange over the next 10 minutes."}
+
+### Ask the agent to reposition if needed
+POST http://localhost:3005/agent/run
+Content-Type: application/json
+
+{"task": "Check every SKU and place reposition orders for anything at risk of running out before the next order could arrive."}
+
+### Ask the agent what's in flight
+POST http://localhost:3005/agent/run
+Content-Type: application/json
+
+{"task": "What reposition orders are currently in flight?"}

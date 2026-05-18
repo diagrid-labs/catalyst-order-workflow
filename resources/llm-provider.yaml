@@ -1,0 +1,16 @@
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: llm-provider
+spec:
+  type: conversation.openai
+  version: v1
+  metadata:
+    - name: key
+      value: ollama
+    - name: model
+      value: qwen2.5:7b
+    - name: endpoint
+      value: http://localhost:11434/v1
+scopes:
+  - inventory-agent
