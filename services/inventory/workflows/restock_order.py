@@ -9,13 +9,12 @@ than awaiting the workflow.
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import dapr.ext.workflow as wf
 from dapr.clients import DaprClient
 
 from order_state import (
-    LEAD_TIME_MIN,
     read_active_orders,
     write_active_orders,
     write_order,
@@ -38,12 +37,10 @@ def restock_order_workflow(ctx: wf.DaprWorkflowContext, order: dict):
 
 def register_order(_: wf.WorkflowActivityContext, order: dict) -> dict:
     placed_at = datetime.now(timezone.utc)
-    eta = placed_at + timedelta(minutes=LEAD_TIME_MIN)
     record = {
         "id": order["id"],
         "items": order["items"],
         "placed_at": placed_at.isoformat(),
-        "eta": eta.isoformat(),
         "status": "placed",
         "delivered_at": None,
     }

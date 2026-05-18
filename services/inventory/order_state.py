@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from dapr.clients import DaprClient
 
 STATESTORE_NAME = os.getenv("STATESTORE_NAME", "statestore")
-LEAD_TIME_MIN = int(os.getenv("LEAD_TIME_MIN", 5))
 
 ACTIVE_ORDERS_KEY = "repositions:active"
 

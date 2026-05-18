@@ -45,7 +45,7 @@ Decision rule for placing a reposition for a SKU:
 
 Always call get_pending_repositions before placing any new reposition, and
 skip any SKU that already has an in-flight order. After placing an order,
-report the order id and ETA.
+report the order id.
 
 Be concise. Show numbers, not paragraphs.
 """

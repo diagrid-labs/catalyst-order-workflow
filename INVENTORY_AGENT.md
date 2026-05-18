@@ -19,8 +19,8 @@ through a `trigger_reposition` tool.
   - Place a new reposition order (one combined order for any number of SKUs).
 - **Decision rule** (LLM is prompted to follow it):
   Order if `forecast(horizon) ≥ current_stock` **and** no in-flight order
-  exists for that SKU. Horizon defaults to 6 min (`HORIZON_MIN`) — chosen
-  as the reposition lead time (5 min) plus a one-minute buffer.
+  exists for that SKU. Horizon defaults to 6 min (`HORIZON_MIN`) — roughly
+  the typical reposition turnaround plus a one-minute buffer.
 - **In-flight awareness.** The agent must avoid double-ordering an SKU that
   already has a pending delivery.
 
@@ -43,7 +43,6 @@ through a `trigger_reposition` tool.
 ### Parameters (configurable via env / component metadata)
 | Setting | Default | Where |
 |---|---|---|
-| Reposition lead time (ETA estimate only) | 5 min | `LEAD_TIME_MIN` env (inventory service) |
 | SMA window | 5 min | `SMA_WINDOW_MIN` env (inventory service + agent) |
 | Forecast horizon | 6 min | `HORIZON_MIN` env (inventory service + agent) |
 | Inventory service app-id (for service invocation) | `inventory` | `INVENTORY_APP_ID` env (agent) |
@@ -167,7 +166,7 @@ endpoints above.
 ### Reposition state
 Two key kinds in the shared Dapr state store:
 - `reposition:<order_id>` — full record. At placement time: `items`,
-  `placed_at`, `eta`, `status: "placed"`, `delivered_at: null`. On delivery,
+  `placed_at`, `status: "placed"`, `delivered_at: null`. On delivery,
   `status: "delivered"`, `delivered_at`, `delivered_items` (the quantities
   actually applied — equal to `items` unless amended), and, when present,
   `confirmation_message` and `amendments`. Kept forever (demo).
