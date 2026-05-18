@@ -1,7 +1,11 @@
 """Restock-order workflow.
 
-Registers the reposition order and starts the delivery workflow as a child.
-Returns the placed order record so the caller can hand an order id back to the user immediately.
+Registers the reposition order (writing the placed record to state and
+appending the order id to the active-orders list) and then starts the
+delivery workflow as a child. The parent workflow only completes once the
+child has — i.e. once the delivery is confirmed — so callers that need
+the order id sooner should read it from state after registration rather
+than awaiting the workflow.
 """
 
 import logging

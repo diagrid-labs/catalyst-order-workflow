@@ -44,11 +44,16 @@ def delivery_workflow(ctx: wf.DaprWorkflowContext, order: dict):
 
 
 def deliver_order(_: wf.WorkflowActivityContext, payload: dict) -> dict:
-    """Add `items` to inventory atomically per SKU and mark the order delivered.
+    """Add `items` to inventory and mark the order delivered.
 
     `payload` carries the order id, the items to apply (already chosen between
     original and amended in the workflow), and the raw confirmation envelope
     so the message and amendments can be persisted on the order record.
+
+    Per-SKU stock updates are read-modify-write without an etag — fine for
+    the demo where deliveries don't overlap, but two concurrent deliveries
+    touching the same SKU could lose an update. /reserve is the path that
+    needs to be concurrency-safe and is etag-guarded there.
     """
     order_id = payload["id"]
     delivered_items = payload["items"]

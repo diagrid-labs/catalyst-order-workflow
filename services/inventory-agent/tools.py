@@ -103,8 +103,12 @@ class _TriggerRepositionArgs(BaseModel):
 def trigger_reposition(items: dict[str, int]) -> dict:
     """Place a reposition order for the given items.
 
-    Starts a durable workflow that registers the order immediately and applies
-    the stock 5 minutes later. Returns the created order record.
+    Starts a durable workflow that registers the order and adds it to the
+    in-flight list immediately, with an ETA roughly LEAD_TIME_MIN minutes
+    out. The stock is applied later, when the delivery is confirmed via
+    `POST /api/v1/inventory/orders/<id>/confirm` — not on a timer. Returns
+    the created order record (`id`, `items`, `placed_at`, `eta`,
+    `status: "placed"`).
     """
     return _invoke("api/v1/inventory/orders", verb="POST", data={"items": items})
 
