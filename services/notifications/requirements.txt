@@ -1,4 +1,4 @@
-grpcio>=1.66.2
-six==1.16.0
-dapr==1.15.0
-Flask>=3.1.1
+# Not used. The notifications service is a Node app — see package.json and
+# server.js. This file is left empty rather than deleted (deletion was
+# blocked) and should be removed from the repo. Installing it pulled in an
+# older `dapr` and broke the rest of the venv.
