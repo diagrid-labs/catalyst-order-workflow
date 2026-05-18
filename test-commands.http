@@ -34,4 +34,27 @@ Content-Type: application/json
 
 {"approver": "kendall", "approved": true}
 
+### Place a reposition order directly (bypasses the agent)
+POST http://localhost:3002/api/v1/inventory/orders
+Content-Type: application/json
+
+{"items": {"orange": 10, "apple": 5}}
+
+### List active (in-flight) reposition orders
+GET http://localhost:3002/api/v1/inventory/orders/active
+
+### Confirm delivery as ordered (no amendments)
+POST http://localhost:3002/api/v1/inventory/orders/reposition_REPLACEME/confirm
+Content-Type: application/json
+
+{"message": "Truck arrived, contents match the order"}
+
+### Confirm delivery with amended quantities
+POST http://localhost:3002/api/v1/inventory/orders/reposition_REPLACEME/confirm
+Content-Type: application/json
+
+{
+  "message": "Short on apple, extra orange",
+  "amendments": {"orange": 12, "apple": 3}
+}
 

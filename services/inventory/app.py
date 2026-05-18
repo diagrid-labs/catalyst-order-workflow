@@ -1,14 +1,27 @@
 import logging
 import os
+from uuid import uuid4
 
+import dapr.ext.workflow as wf
 import grpc
 from dapr.clients import DaprClient
 from dapr.clients.grpc._request import TransactionalStateOperation
 from dapr.clients.grpc._state import StateItem
 from flask import Flask, jsonify, make_response, request
 
+from order_state import (
+    STATESTORE_NAME,
+    read_active_orders,
+    read_order,
+)
+from workflows import (
+    deliver_order,
+    delivery_workflow,
+    register_order,
+    restock_order_workflow,
+)
+
 APP_PORT = int(os.getenv("APP_PORT", 3002))
-STATESTORE_NAME = os.getenv("STATESTORE_NAME", "statestore")
 
 app = Flask(__name__)
 
@@ -220,18 +233,101 @@ def reserve_inventory():
         )
 
 
+@app.route("/api/v1/inventory/orders", methods=["POST"])
+def create_reposition_order():
+    if not request.is_json:
+        return make_response(jsonify({"error": "Request must be JSON"}), 400)
+    body = request.json or {}
+    items = body.get("items") or {}
+    if not items:
+        return make_response(jsonify({"error": "items required"}), 400)
+
+    order_id = f"reposition_{uuid4().hex[:8]}"
+    wf_client = wf.DaprWorkflowClient()
+    wf_client.schedule_new_workflow(
+        restock_order_workflow,
+        input={"id": order_id, "items": items},
+        instance_id=order_id,
+    )
+
+    try:
+        wf_client.wait_for_workflow_completion(order_id, timeout_in_seconds=10)
+    except Exception as e:
+        logger.warning(f"Order {order_id} placement wait failed (will keep running): {e}")
+
+    with DaprClient() as d:
+        record = read_order(d, order_id)
+
+    if record is None:
+        record = {"id": order_id, "items": items, "status": "placed"}
+    return jsonify(record), 201
+
+
+@app.route("/api/v1/inventory/orders/active", methods=["GET"])
+def list_active_orders():
+    with DaprClient() as d:
+        active_ids = read_active_orders(d)
+        records = [read_order(d, oid) for oid in active_ids]
+        records = [r for r in records if r is not None]
+    return jsonify(records)
+
+
+@app.route("/api/v1/inventory/orders/<order_id>/confirm", methods=["POST"])
+def confirm_reposition_order(order_id):
+    """Notify the delivery workflow that the reposition has arrived.
+
+    Body (all fields optional): `{message: str, amendments: {sku: qty}}`.
+    If `amendments` is provided, the amended quantities are applied to stock
+    instead of the originally ordered ones. Returns 202 once the event is
+    raised; the workflow runs the inventory update asynchronously.
+    """
+    body = request.json if request.is_json else {}
+    delivery_id = f"delivery_{order_id}"
+    try:
+        wf.DaprWorkflowClient().raise_workflow_event(
+            instance_id=delivery_id,
+            event_name="delivery_confirmed",
+            data=body or {},
+        )
+    except Exception as e:
+        logger.error(f"Failed to raise delivery_confirmed for {order_id}: {e}")
+        return make_response(
+            jsonify({"error": "Internal Server Error", "message": str(e)}), 500
+        )
+    return jsonify({"order_id": order_id, "status": "confirmation_sent"}), 202
+
+
+@app.route("/api/v1/inventory/orders/<order_id>", methods=["GET"])
+def get_reposition_order(order_id):
+    with DaprClient() as d:
+        record = read_order(d, order_id)
+    if record is None:
+        return make_response(jsonify({"error": "not found"}), 404)
+    return jsonify(record)
+
+
 @app.route("/health", methods=["GET"])
 @app.route("/healthz", methods=["GET"])
 def health_check():
     return jsonify({
         "service": "inventory-service",
         "status": "healthy",
-        "version": "1.0.0",
+        "version": "1.1.0",
     })
 
 
 def main():
-    app.run(host="0.0.0.0", port=APP_PORT, debug=False)
+    logger.info("Starting inventory workflow runtime...")
+    wf_runtime = wf.WorkflowRuntime()
+    wf_runtime.register_workflow(restock_order_workflow)
+    wf_runtime.register_workflow(delivery_workflow)
+    wf_runtime.register_activity(register_order)
+    wf_runtime.register_activity(deliver_order)
+    wf_runtime.start()
+
+    app.run(host="0.0.0.0", port=APP_PORT, debug=False, use_reloader=False)
+
+    wf_runtime.shutdown()
 
 
 if __name__ == "__main__":
