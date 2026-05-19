@@ -146,16 +146,31 @@ def reposition_inventory():
 RESERVE_MAX_RETRIES = 5
 
 
-def _reserve_atomic(d: DaprClient, sku: str, qty: int = 1):
-    """Decrement stock by `qty` and append a sale to history in one transaction.
+def _reservation_key(order_id: str) -> str:
+    return f"reservation:{order_id.lower()}"
+
+
+def _reserve_atomic(d: DaprClient, order_id: str, sku: str, qty: int = 1):
+    """Decrement stock and append a sale, recording an idempotency marker
+    keyed by `order_id`. All three writes share one transaction with per-key
+    etags; on conflict we retry.
 
     Returns (new_stock, error) where error is one of None, "not_found",
-    "out_of_stock", or "conflict". Both writes share a single transaction with
-    per-key etags; if either etag is stale the transaction aborts and we retry,
-    so concurrent reservations cannot double-decrement nor drop a sale entry.
+    "out_of_stock", or "conflict". A replay for the same `order_id` reads
+    the marker and short-circuits with the original `remaining` — stock is
+    decremented exactly once per order.
     """
     sku_key = sku.lower()
+    marker_key = _reservation_key(order_id)
     for _ in range(RESERVE_MAX_RETRIES):
+        marker_resp = d.get_state(STATESTORE_NAME, marker_key)
+        if marker_resp.data:
+            record = json.loads(marker_resp.data.decode("utf-8"))
+            # Replay: return the recorded outcome without touching stock.
+            # Works for both "reserved" and "released" states (the caller
+            # asked to reserve, and we have a durable record of what happened).
+            return record.get("remaining"), None
+
         stock_resp = d.get_state(STATESTORE_NAME, sku_key)
         if not stock_resp.data:
             return None, "not_found"
@@ -170,13 +185,22 @@ def _reserve_atomic(d: DaprClient, sku: str, qty: int = 1):
         history = _decode_history(history_resp)
         encoded = encode_appended(history, qty, now_iso())
 
+        new_stock = stock - qty
+        marker = json.dumps({
+            "status": "reserved",
+            "sku": sku_key,
+            "qty": qty,
+            "remaining": new_stock,
+            "ts": now_iso(),
+        })
+
         try:
             d.execute_state_transaction(
                 store_name=STATESTORE_NAME,
                 operations=[
                     TransactionalStateOperation(
                         key=sku_key,
-                        data=str(stock - qty),
+                        data=str(new_stock),
                         etag=stock_resp.etag or None,
                     ),
                     TransactionalStateOperation(
@@ -184,11 +208,76 @@ def _reserve_atomic(d: DaprClient, sku: str, qty: int = 1):
                         data=encoded,
                         etag=history_resp.etag or None,
                     ),
+                    TransactionalStateOperation(
+                        key=marker_key,
+                        data=marker,
+                    ),
                 ],
             )
-            return stock - qty, None
+            return new_stock, None
         except grpc.RpcError as err:
-            logger.info(f"Retrying reservation for {sku_key}: {err.details()}")
+            logger.info(f"Retrying reservation for {sku_key}/{order_id}: {err.details()}")
+    return None, "conflict"
+
+
+def _release_atomic(d: DaprClient, order_id: str):
+    """Reverse a reservation: increment stock back and transition the marker
+    to "released". Idempotent by `order_id`.
+
+    Returns (new_stock, error). `new_stock` is None when there was nothing
+    to release (no prior marker for this order_id). Error is one of None,
+    "missing_sku" (marker references a sku that vanished from the catalog),
+    or "conflict".
+    """
+    marker_key = _reservation_key(order_id)
+    for _ in range(RESERVE_MAX_RETRIES):
+        marker_resp = d.get_state(STATESTORE_NAME, marker_key)
+        if not marker_resp.data:
+            # Reserve never committed for this order id (or marker was cleared);
+            # nothing to release.
+            return None, None
+        record = json.loads(marker_resp.data.decode("utf-8"))
+        if record.get("status") == "released":
+            # Already released; replay returns the same answer.
+            return record.get("remaining"), None
+
+        sku_key = record["sku"]
+        qty = int(record["qty"])
+        stock_resp = d.get_state(STATESTORE_NAME, sku_key)
+        if not stock_resp.data:
+            return None, "missing_sku"
+        try:
+            stock = int(stock_resp.data.decode("utf-8"))
+        except (AttributeError, ValueError):
+            return None, "missing_sku"
+
+        new_stock = stock + qty
+        updated_marker = json.dumps({
+            **record,
+            "status": "released",
+            "remaining": new_stock,
+            "released_ts": now_iso(),
+        })
+
+        try:
+            d.execute_state_transaction(
+                store_name=STATESTORE_NAME,
+                operations=[
+                    TransactionalStateOperation(
+                        key=sku_key,
+                        data=str(new_stock),
+                        etag=stock_resp.etag or None,
+                    ),
+                    TransactionalStateOperation(
+                        key=marker_key,
+                        data=updated_marker,
+                        etag=marker_resp.etag or None,
+                    ),
+                ],
+            )
+            return new_stock, None
+        except grpc.RpcError as err:
+            logger.info(f"Retrying release for {order_id}: {err.details()}")
     return None, "conflict"
 
 
@@ -232,7 +321,7 @@ def reserve_inventory():
 
     try:
         with DaprClient() as d:
-            new_stock, err = _reserve_atomic(d, item, qty=qty)
+            new_stock, err = _reserve_atomic(d, order_id, item, qty=qty)
             if err == "not_found":
                 return jsonify({"id": order_id, "success": False,
                                 "message": f"Item {item} not found in inventory"})
@@ -274,6 +363,55 @@ def reserve_inventory():
         return make_response(
             jsonify({"error": "Internal Server Error",
                      "message": f"Unexpected error: {str(e)}"}), 500
+        )
+
+
+@app.route("/api/v1/inventory/release", methods=["POST"])
+def release_inventory():
+    """Compensating endpoint for `/reserve`. Idempotent by `order_id`:
+    a release without a prior committed reservation is a no-op; a second
+    release for the same order is a no-op. Body: `{id: <order_id>}` (extra
+    fields are ignored).
+    """
+    if not request.is_json:
+        return make_response(
+            jsonify({"error": "Bad Request", "message": "Request must be JSON"}), 400
+        )
+    payload = request.json or {}
+    order_id = payload.get("id")
+    if not order_id:
+        return make_response(
+            jsonify({"error": "Bad Request", "message": "order id required"}), 400
+        )
+
+    logger.info(f"Processing inventory release for order {order_id}")
+
+    try:
+        with DaprClient() as d:
+            new_stock, err = _release_atomic(d, order_id)
+            if err == "conflict":
+                return make_response(
+                    jsonify({"id": order_id, "success": False,
+                             "message": "Too much contention; please retry"}),
+                    503,
+                )
+            if err == "missing_sku":
+                return make_response(
+                    jsonify({"id": order_id, "success": False,
+                             "message": "Reserved sku no longer in catalog"}),
+                    409,
+                )
+            return jsonify({
+                "id": order_id, "success": True,
+                "message": "Reservation released" if new_stock is not None
+                           else "Nothing to release",
+                "remaining": new_stock,
+            })
+    except grpc.RpcError as err:
+        logger.error(f"Error releasing inventory: {err.details()}")
+        return make_response(
+            jsonify({"error": "Internal Server Error",
+                     "message": "Failed to release inventory"}), 500
         )
 
 

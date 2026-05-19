@@ -112,8 +112,17 @@ def process_order_workflow(ctx: wf.DaprWorkflowContext, order: Order):
         order.total = yield ctx.call_activity(price_order, input=order)
         yield ctx.call_activity(notify, input=f"Priced order at {order.total} ({order.item} x{order.qty})")
 
-    # Call into the inventory service to reserve the items in this order
-    result = yield ctx.call_activity(reserve_inventory, input=order)
+    # Call into the inventory service to reserve the items in this order.
+    # If the activity raises (e.g. response parse error, transport blip after
+    # the server-side commit) the reservation may have landed on the inventory
+    # side. Fire release_inventory as a best-effort compensation, then let
+    # the workflow fail with the original error.
+    try:
+        result = yield ctx.call_activity(reserve_inventory, input=order)
+    except Exception as e:
+        yield ctx.call_activity(notify, input=f"Error reserving inventory: {e}; releasing any reserved stock")
+        yield ctx.call_activity(release_inventory, input=order)
+        raise
 
     if not result.success:
         yield ctx.call_activity(notify, input=f"Failed to reserve inventory: {result.message}")
@@ -216,6 +225,30 @@ def reserve_inventory(_, order: Order) -> InventoryResult:
         inventory_result = InventoryResult(**json.loads(resp.data.decode("utf-8")))
         logging.info(f"Inventory result: {inventory_result}")
         return inventory_result
+
+
+def release_inventory(_, order: Order):
+    """Best-effort compensation for `reserve_inventory`.
+
+    Called when reserve raises or a later step in the same try-block fails:
+    the server-side reservation may already have committed, so we try to
+    put the stock back. Errors are logged, not raised, so compensation
+    never masks the original failure.
+    """
+    order = _to_order(order)
+    logging.info(f"Releasing inventory for order: {order}")
+    try:
+        with DaprClient() as d:
+            resp = d.invoke_method(
+                "inventory", "api/v1/inventory/release",
+                http_verb="POST", data=json.dumps(asdict(order)),
+            )
+            if resp.status_code != 200:
+                logging.warning(
+                    f"Inventory release returned {resp.status_code} for {order.id}"
+                )
+    except Exception as e:
+        logging.warning(f"Inventory release call failed for {order.id}: {e}")
 
 def submit_order_to_shipping(_, order: Order):
     order = _to_order(order)
@@ -346,6 +379,7 @@ def main():
     wf_runtime.register_activity(notify)
     wf_runtime.register_activity(price_order)
     wf_runtime.register_activity(reserve_inventory)
+    wf_runtime.register_activity(release_inventory)
     wf_runtime.register_activity(submit_payment)
     wf_runtime.register_activity(submit_order_to_shipping)
     wf_runtime.register_activity(refund_payment)
