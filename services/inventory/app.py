@@ -40,16 +40,22 @@ app = Flask(__name__)
 
 logger = logging.getLogger("inventory_service")
 
-INVENTORY_ITEMS = ["orange", "apple", "pear", "kiwi"]
+INVENTORY_ITEMS = {
+    "orange": 1.50,
+    "apple": 2.00,
+    "pear": 1.75,
+    "kiwi": 3.00,
+}
 
 
 class InventoryItem:
-    def __init__(self, item: str, quantity: int):
+    def __init__(self, item: str, quantity: int, price: float):
         self.item = item
         self.quantity = quantity
+        self.price = price
 
     def to_dict(self):
-        return {"name": self.item, "quantity": self.quantity}
+        return {"name": self.item, "quantity": self.quantity, "price": self.price}
 
 
 @app.route("/api/v1/inventory", methods=["GET"])
@@ -57,11 +63,13 @@ def get_inventory():
     inventory = []
     with DaprClient() as d:
         try:
-            for item_key in INVENTORY_ITEMS:
+            for item_key, price in INVENTORY_ITEMS.items():
                 item = d.get_state(STATESTORE_NAME, item_key.lower())
                 if item.data:
                     value = item.data.decode("utf-8")
-                    inventory.append(InventoryItem(item=item_key, quantity=value).to_dict())
+                    inventory.append(
+                        InventoryItem(item=item_key, quantity=value, price=price).to_dict()
+                    )
             if not inventory:
                 return jsonify({"message": "No inventory available."})
             return jsonify(inventory)
@@ -91,8 +99,8 @@ def clear_inventory():
 
 @app.route("/api/v1/inventory/restock", methods=["POST"])
 def restock_inventory():
-    """Destructively set every SKU to 100. Contrast with `/reposition`,
-    which is additive.
+    """Destructively set every SKU's quantity to 100. Prices are catalog data
+    and are not touched. Contrast with `/reposition`, which is additive.
     """
     try:
         with DaprClient() as d:
@@ -101,7 +109,7 @@ def restock_inventory():
                 for item_key in INVENTORY_ITEMS
             ]
             d.save_bulk_state(store_name=STATESTORE_NAME, states=state_items)
-        logger.info("Inventory restocked (reset to 100 for all SKUs)")
+        logger.info("Inventory restocked (quantity reset to 100 for all SKUs; prices unchanged)")
         return jsonify({"message": "Inventory has been restocked."})
     except grpc.RpcError as err:
         logger.error(f"Error restocking inventory: {err.details()}")
@@ -113,8 +121,9 @@ def restock_inventory():
 
 @app.route("/api/v1/inventory/reposition", methods=["POST"])
 def reposition_inventory():
-    """Increase stock by the given quantities. Contrast with `/restock`,
-    which destructively resets every SKU to a fixed value.
+    """Increase stock quantity by the given amounts. Prices are catalog data
+    and are not touched. Contrast with `/restock`, which destructively resets
+    every SKU's quantity to a fixed value.
     """
     if not request.is_json:
         return make_response(jsonify({"error": "Request must be JSON"}), 400)

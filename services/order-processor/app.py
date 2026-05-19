@@ -25,7 +25,7 @@ class Order:
     id: str
     customer: str
     item: str
-    total: float
+    total: float = 0.0
     qty: int = 1
 
 @dataclass
@@ -54,16 +54,22 @@ class PaymentResult:
 # Dapr Workflow Definition for Order Processing
 
 def process_order_workflow(ctx: wf.DaprWorkflowContext, order: Order):
-    yield ctx.call_activity(notify, input=f"Processing order for {order.customer}. Item: {order.item}, Total: {order.total}")
+    yield ctx.call_activity(notify, input=f"Processing order for {order.customer}. Item: {order.item}, Qty: {order.qty}")
+
+    # If the order didn't come with an explicit total, price it from the
+    # inventory catalog (unit price * quantity).
+    if not order.total:
+        order.total = yield ctx.call_activity(price_order, input=order)
+        yield ctx.call_activity(notify, input=f"Priced order at {order.total} ({order.item} x{order.qty})")
 
     # Call into the inventory service to reserve the items in this order
     result = yield ctx.call_activity(reserve_inventory, input=order)
-    
+
     if not result.success:
         yield ctx.call_activity(notify, input=f"Failed to reserve inventory: {result.message}")
         return OrderResult(order.id, False, result.message)
 
-    yield ctx.call_activity(notify, input=f"Reserved inventory: {order.item}")
+    yield ctx.call_activity(notify, input=f"Reserved inventory: {order.item} x{order.qty}")
 
     # Orders over $1,000 require human approval
     if order.total >= APPROVAL_THRESHOLD:
@@ -119,7 +125,7 @@ def process_order_workflow(ctx: wf.DaprWorkflowContext, order: Order):
 
     yield ctx.call_activity(notify, input="Shipment scheduled")
 
-    yield ctx.call_activity(notify, input=f"Order processed for {order.customer}. Item: {order.item}, Total: {order.total}")
+    yield ctx.call_activity(notify, input=f"Order processed for {order.customer}. Item: {order.item}, Qty: {order.qty}, Total: {order.total}")
 
     return OrderResult(order.id, True, "Order processed")
 
@@ -131,6 +137,22 @@ def notify(ctx: wf.WorkflowActivityContext, message: str):
             "message": message,
             "data-content-type": "application/json"
         }))
+
+
+def price_order(_, order: Order) -> float:
+    """Look up the unit price for `order.item` and return price * qty."""
+    logging.info(f"Pricing order from inventory catalog: {order}")
+    with DaprClient() as d:
+        resp = d.invoke_method("inventory", "api/v1/inventory", http_verb="GET")
+        if resp.status_code != 200:
+            raise Exception(f"Error calling inventory service: {resp.status_code}")
+        inventory = json.loads(resp.data.decode("utf-8"))
+    for entry in inventory:
+        if entry.get("name", "").lower() == order.item.lower():
+            total = float(entry["price"]) * order.qty
+            logging.info(f"Priced {order.item} x{order.qty} at {total}")
+            return total
+    raise Exception(f"Item {order.item} not found in inventory catalog")
 
 
 def reserve_inventory(_, order: Order) -> InventoryResult:
@@ -178,13 +200,11 @@ def submit_order():
     request_data = request.get_json()
     if not request_data:
         return """Invalid request. Should be in the form of {
-            \"customer\": \"joe\", \"item\": \"apples\", \"total\": 100.0}""", 400
+            \"customer\": \"joe\", \"item\": \"apples\", \"qty\": 3}""", 400
     if not request_data.get("customer"):
         return "Missing customer name", 400
     if not request_data.get("item"):
         return "Missing item", 400
-    if not request_data.get("total"):
-        return "Missing total", 400
 
     try:
         qty = int(request_data.get("qty", 1))
@@ -193,11 +213,15 @@ def submit_order():
     if qty < 1:
         return "qty must be >= 1", 400
 
+    # `total` is optional. If not provided, the workflow prices the order
+    # from the inventory catalog (unit price * qty).
+    total = float(request_data.get("total") or 0)
+
     order = Order(
         None,
         request_data.get("customer"),
         request_data.get("item"),
-        request_data.get("total"),
+        total,
         qty)
 
     # Generate a unique ID for this order
@@ -290,6 +314,7 @@ def main():
     wf_runtime = wf.WorkflowRuntime()  # host/port comes from env vars
     wf_runtime.register_workflow(process_order_workflow)
     wf_runtime.register_activity(notify)
+    wf_runtime.register_activity(price_order)
     wf_runtime.register_activity(reserve_inventory)
     wf_runtime.register_activity(submit_payment)
     wf_runtime.register_activity(submit_order_to_shipping)

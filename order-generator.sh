@@ -6,27 +6,47 @@
 HOST="localhost"
 PORT="3006"
 ENDPOINT="/orders"
+INVENTORY_PORT="3002"
 RATE=2  # requests per second
 DURATION=0  # run forever by default
 VERBOSE=true
 
 # Parse command line arguments
-while getopts "h:p:e:r:d:q" opt; do
+while getopts "h:p:e:r:d:I:q" opt; do
   case $opt in
     h) HOST="$OPTARG" ;;
     p) PORT="$OPTARG" ;;
     e) ENDPOINT="$OPTARG" ;;
     r) RATE="$OPTARG" ;;
     d) DURATION="$OPTARG" ;;
+    I) INVENTORY_PORT="$OPTARG" ;;
     q) VERBOSE=false ;;
     \?) echo "Invalid option -$OPTARG" >&2; exit 1 ;;
   esac
 done
 
 # Arrays of sample data
-CUSTOMERS=("alice" "bob" "charlie" "david" "emma" "frank" "grace" "hannah" "ian" "julia" 
+CUSTOMERS=("alice" "bob" "charlie" "david" "emma" "frank" "grace" "hannah" "ian" "julia"
            "kevin" "lucy" "michael" "nina" "oliver" "penny" "quinn" "robert" "sarah" "thomas")
-ITEMS=("apple" "kiwi" "mango" "grapefruit" "orange" "pear")
+
+# Fetch the current inventory from the inventory service so the generator
+# only ever orders SKUs that actually exist in the catalog.
+inventory_url="${HOST}:${INVENTORY_PORT}/api/v1/inventory"
+inventory_json=$(curl -sf "$inventory_url") || {
+  echo "Failed to fetch inventory from $inventory_url" >&2
+  exit 1
+}
+mapfile -t ITEMS < <(echo "$inventory_json" | python3 -c "import sys, json
+data = json.load(sys.stdin)
+if isinstance(data, list):
+    for entry in data:
+        name = entry.get('name')
+        if name:
+            print(name)")
+if [ ${#ITEMS[@]} -eq 0 ]; then
+  echo "Inventory is empty — restock first via POST $inventory_url/restock" >&2
+  exit 1
+fi
 
 # Calculate sleep time between requests
 SLEEP_TIME=$(awk -v rate="$RATE" 'BEGIN{print 1/rate}')
@@ -36,7 +56,10 @@ if $VERBOSE; then
   echo "=== Order Generator Configuration ==="
   echo "Target: $HOST:$PORT$ENDPOINT"
   echo "Service Host: $SERVICE_HOST"
+  echo "Inventory: $inventory_url"
+  echo "Items: ${ITEMS[*]}"
   echo "Rate: $RATE requests per second"
+  echo "Qty distribution: 80% in 1..10, 20% in 10..50"
   if [ "$DURATION" -gt 0 ]; then
     echo "Duration: $DURATION seconds"
   else
@@ -44,15 +67,6 @@ if $VERBOSE; then
   fi
   echo "======================================"
 fi
-
-# Function to generate a random decimal number between min and max
-random_price() {
-  local min=$1
-  local max=$2
-  local price=$(awk -v min="$min" -v max="$max" 'BEGIN{srand(); print min+rand()*(max-min)}')
-  # Format to 2 decimal places
-  printf "%.2f" $price
-}
 
 # Initialize counters
 count=0
@@ -76,44 +90,41 @@ while true; do
     break
   fi
   
-  # Select random customer, item, and total
+  # Select random customer, item, and quantity. Quantities follow a realistic
+  # distribution — most orders are small (1..10), occasionally a bulk order
+  # (10..50).
   customer=${CUSTOMERS[$RANDOM % ${#CUSTOMERS[@]}]}
   item=${ITEMS[$RANDOM % ${#ITEMS[@]}]}
-  
-  # Generate a price with a realistic distribution
-  # Items are more likely to be in the $5-25 range than $25-100
   if [ $((RANDOM % 100)) -lt 80 ]; then
-    total=$(random_price 5.00 25.00)
+    qty=$(( (RANDOM % 10) + 1 ))
   else
-    total=$(random_price 25.00 100.00)
+    qty=$(( (RANDOM % 41) + 10 ))
   fi
-  
-  echo "TRY"
-  echo $HOST:$PORT$ENDPOINT -H "Host: $SERVICE_HOST"
 
-  # Construct and execute the API call
+  # Construct and execute the API call. The order-processor prices the order
+  # from the inventory catalog (unit price * qty) when no total is provided.
   response=$(curl -s -w "\n%{http_code}" -X POST $HOST:$PORT$ENDPOINT \
     -H "Host: $SERVICE_HOST" \
     -H "Content-Type: application/json" \
-    -d "{\"customer\": \"$customer\", \"item\": \"$item\", \"total\": $total}")
-  
+    -d "{\"customer\": \"$customer\", \"item\": \"$item\", \"qty\": $qty}")
+
   # Extract status code and response body
   status_code=$(echo "$response" | tail -n1)
   response_body=$(echo "$response" | sed '$d')
-  
+
   count=$((count + 1))
-  
+
   # Print output if verbose mode is enabled
   if $VERBOSE; then
     timestamp=$(date "+%Y-%m-%d %H:%M:%S")
     if [ "$status_code" -ge 200 ] && [ "$status_code" -lt 300 ]; then
-      echo "[$timestamp] #$count - $customer ordered $item: \$$total - Success ($status_code)"
+      echo "[$timestamp] #$count - $customer ordered $item x$qty - Success ($status_code)"
     else
-      echo "[$timestamp] #$count - $customer ordered $item: \$$total - Failed ($status_code)"
+      echo "[$timestamp] #$count - $customer ordered $item x$qty - Failed ($status_code)"
       echo "Response: $response_body"
     fi
   fi
-  
+
   # Sleep until next request
   sleep $SLEEP_TIME
 done

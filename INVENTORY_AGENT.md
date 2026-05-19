@@ -50,7 +50,7 @@ through a `trigger_reposition` tool.
 | Inventory service app-id (for service invocation) | `inventory` | `INVENTORY_APP_ID` env (agent) |
 | State store | `statestore` | `STATESTORE_NAME` env (both services) |
 | LLM model / endpoint | qwen2.5:7b @ ollama.ollama.svc.cluster.local:11434/v1 | `resources/llm-provider.yaml` |
-| SKUs | `orange, apple, pear, kiwi` | inventory service |
+| SKUs (name → unit price) | `orange:1.50, apple:2.00, pear:1.75, kiwi:3.00` | `INVENTORY_ITEMS` in inventory service |
 
 ## Implementation
 
@@ -109,10 +109,10 @@ User → POST /agent/run                              (inventory-agent — provi
 ### Key endpoints (inventory service)
 | Verb | Path | Purpose |
 |---|---|---|
-| `GET`    | `/api/v1/inventory`                       | current levels |
+| `GET`    | `/api/v1/inventory`                       | current levels — returns `[{name, quantity, price}, …]`; the unit price is catalog data from `INVENTORY_ITEMS` and is never mutated by state operations |
 | `POST`   | `/api/v1/inventory/reserve`               | reserves `qty` units of one SKU (default 1) — atomic decrement + sale-history append (etag-guarded, retries on conflict), publishes `sales` event |
-| `POST`   | `/api/v1/inventory/restock`               | demo reset — destructively set all SKUs to 100 |
-| `POST`   | `/api/v1/inventory/reposition`            | additive — `{items: {sku: qty}}` |
+| `POST`   | `/api/v1/inventory/restock`               | demo reset — destructively set every SKU's quantity to 100 (prices are not touched) |
+| `POST`   | `/api/v1/inventory/reposition`            | additive `{items: {sku: qty}}` — adds to quantity only (prices are not touched) |
 | `GET`    | `/api/v1/inventory/sales/history?sku=…`   | recent-window sales summary for an SKU |
 | `GET`    | `/api/v1/inventory/forecast?sku=…&horizon_min=…&window_min=…` | SMA-based forecast; `window_min` defaults to `SMA_WINDOW_MIN` |
 | `POST`   | `/api/v1/inventory/orders`                | start a `restock_order_workflow` |

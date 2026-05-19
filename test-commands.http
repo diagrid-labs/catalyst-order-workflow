@@ -12,14 +12,22 @@ POST http://localhost:3002/api/v1/inventory/restock
 POST http://localhost:3006/orders
 Content-Type: application/json
 
-{"customer": "kendall", "item": "orange", "total": 100}
+{"customer": "kendall", "item": "orange", "qty": 3}
 
-### Submit an expensive order
+### Submit another order
 // @name wfrequest_approval
 POST http://localhost:3006/orders
 Content-Type: application/json
 
-{"customer": "Veronica", "item": "kiwi", "total": 1299.00}
+{"customer": "Veronica", "item": "kiwi", "qty": 2}
+
+### NOTE: `total` is optional. When omitted, the workflow prices the order
+### from the inventory catalog as unit price * qty. An explicit `total`
+### overrides that — useful e.g. to force the >$1000 approval branch:
+POST http://localhost:3006/orders
+Content-Type: application/json
+
+{"customer": "Veronica", "item": "kiwi", "qty": 2, "total": 1299.00}
 
 ### Get the status of an order
 @instance_id = {{wfrequest.response.body.instance_id}}
