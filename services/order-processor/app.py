@@ -80,6 +80,7 @@ class InventoryResult:
     id: str
     success: bool
     message: str
+    remaining: int | None = None
 
 @dataclass
 class PaymentResult:

@@ -4,6 +4,8 @@ common:
   appLogDestination: "console"
   daprdLogDestination: "console"
   resourcesPaths: ["./resources"]
+  env:
+    GRPC_DEFAULT_SSL_ROOTS_FILE_PATH: /home/pablo/.onebox/tls/ca.crt
 apps:
   - appID: inventory
     appPort: 3002
