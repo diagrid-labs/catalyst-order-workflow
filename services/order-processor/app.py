@@ -87,6 +87,19 @@ class PaymentResult:
     success: bool
     message: str
 
+
+def _to_order(value) -> Order:
+    """Reconstruct an Order at an activity boundary.
+
+    The Dapr workflow SDK serializes dataclass inputs to JSON and
+    deserializes them back as types.SimpleNamespace, so the `order: Order`
+    annotation on activity functions is a hint, not a runtime guarantee.
+    Rebuilding the dataclass here makes the hint honest and lets us use
+    asdict() consistently for re-serialization.
+    """
+    return value if isinstance(value, Order) else Order(**vars(value))
+
+
 # Dapr Workflow Definition for Order Processing
 
 def process_order_workflow(ctx: wf.DaprWorkflowContext, order: Order):
@@ -177,6 +190,7 @@ def notify(ctx: wf.WorkflowActivityContext, message: str):
 
 def price_order(_, order: Order) -> float:
     """Look up the unit price for `order.item` and return price * qty."""
+    order = _to_order(order)
     logging.info(f"Pricing order from inventory catalog: {order}")
     with DaprClient() as d:
         resp = d.invoke_method("inventory", "api/v1/inventory", http_verb="GET")
@@ -192,6 +206,7 @@ def price_order(_, order: Order) -> float:
 
 
 def reserve_inventory(_, order: Order) -> InventoryResult:
+    order = _to_order(order)
     logging.info(f"Reserving inventory for order: {order}")
     with DaprClient() as d:
         resp = d.invoke_method("inventory", "api/v1/inventory/reserve", http_verb="POST", data=json.dumps(asdict(order)))
@@ -202,6 +217,7 @@ def reserve_inventory(_, order: Order) -> InventoryResult:
         return inventory_result
 
 def submit_order_to_shipping(_, order: Order):
+    order = _to_order(order)
     logging.info(f"Submitting order to shipping: {order}")
     with DaprClient() as d:
         resp = d.invoke_method("shipping", "shipping/ship", http_verb="POST", data=json.dumps(asdict(order)))
@@ -209,6 +225,7 @@ def submit_order_to_shipping(_, order: Order):
             raise Exception(f"Error calling shipping service: {resp.status_code}: {resp.text()}")
 
 def submit_payment(_, order: Order) -> PaymentResult:
+    order = _to_order(order)
     logging.info(f"Submitting payment for order: {order}")
     with DaprClient() as d:
         resp = d.invoke_method("payments", "api/v1/payments", http_verb="POST", data=json.dumps(asdict(order)))
@@ -222,6 +239,7 @@ def submit_payment(_, order: Order) -> PaymentResult:
         return payment_result
 
 def refund_payment(_, order: Order):
+    order = _to_order(order)
     logging.info(f"Refunding payment for order: {order}")
     with DaprClient() as d:
         resp = d.invoke_method("payments", f"api/v1/payments/{order.id}/refunds", http_verb="POST", data=json.dumps(asdict(order)))
