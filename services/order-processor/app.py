@@ -7,7 +7,7 @@ import dapr.ext.workflow as wf
 from dapr.clients import DaprClient
 from flask import Flask, request, url_for
 from markupsafe import escape
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from datetime import timedelta
 
 APP_PORT = os.getenv("APP_PORT", "3006")
@@ -28,10 +28,46 @@ class Order:
     total: float = 0.0
     qty: int = 1
 
+    def __post_init__(self):
+        if not self.id:
+            raise ValueError("id required")
+        if not self.customer:
+            raise ValueError("customer required")
+        if not self.item:
+            raise ValueError("item required")
+        if self.qty < 1:
+            raise ValueError("qty must be >= 1")
+        if self.total < 0:
+            raise ValueError("total must be >= 0")
+
+    @classmethod
+    def new(cls, *, customer: str, item: str, total: float = 0.0, qty: int = 1) -> "Order":
+        """Build a new Order with a freshly generated id.
+
+        Reconstructing an existing order (e.g. from workflow state) should use
+        the regular constructor with `id` supplied.
+        """
+        if not customer:
+            raise ValueError("customer required")
+        suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
+        return cls(
+            id=f"order_{customer.lower()}_{suffix}",
+            customer=customer,
+            item=item,
+            total=total,
+            qty=qty,
+        )
+
 @dataclass
 class Approval:
     approver: str
     approved: bool
+
+    def __post_init__(self):
+        if not self.approver:
+            raise ValueError("approver required")
+        if not isinstance(self.approved, bool):
+            raise ValueError("approved must be a boolean")
 
 @dataclass
 class OrderResult:
@@ -158,7 +194,7 @@ def price_order(_, order: Order) -> float:
 def reserve_inventory(_, order: Order) -> InventoryResult:
     logging.info(f"Reserving inventory for order: {order}")
     with DaprClient() as d:
-        resp = d.invoke_method("inventory", "api/v1/inventory/reserve",  http_verb="POST",  data=json.dumps(order.__dict__))
+        resp = d.invoke_method("inventory", "api/v1/inventory/reserve", http_verb="POST", data=json.dumps(asdict(order)))
         if resp.status_code != 200:
             raise Exception(f"Error calling inventory service: {resp.status_code}")
         inventory_result = InventoryResult(**json.loads(resp.data.decode("utf-8")))
@@ -168,17 +204,17 @@ def reserve_inventory(_, order: Order) -> InventoryResult:
 def submit_order_to_shipping(_, order: Order):
     logging.info(f"Submitting order to shipping: {order}")
     with DaprClient() as d:
-        resp = d.invoke_method("shipping", "shipping/ship",  http_verb="POST",  data=json.dumps(order.__dict__))
+        resp = d.invoke_method("shipping", "shipping/ship", http_verb="POST", data=json.dumps(asdict(order)))
         if resp.status_code != 200:
             raise Exception(f"Error calling shipping service: {resp.status_code}: {resp.text()}")
 
 def submit_payment(_, order: Order) -> PaymentResult:
     logging.info(f"Submitting payment for order: {order}")
     with DaprClient() as d:
-        resp = d.invoke_method("payments", "api/v1/payments",  http_verb="POST",  data=json.dumps(order.__dict__))
+        resp = d.invoke_method("payments", "api/v1/payments", http_verb="POST", data=json.dumps(asdict(order)))
         payment_result = PaymentResult(**json.loads(resp.data.decode("utf-8")))
 
-        if resp._status_code != 201:
+        if resp.status_code != 201:
             if 'declined' not in payment_result.message:
                 raise Exception(f"Error calling payment service: {resp.status_code}: {resp.text()}")
 
@@ -188,7 +224,7 @@ def submit_payment(_, order: Order) -> PaymentResult:
 def refund_payment(_, order: Order):
     logging.info(f"Refunding payment for order: {order}")
     with DaprClient() as d:
-        resp = d.invoke_method("payments", f"api/v1/payments/{order.id}/refunds",  http_verb="POST",  data=json.dumps(order.__dict__))
+        resp = d.invoke_method("payments", f"api/v1/payments/{order.id}/refunds", http_verb="POST", data=json.dumps(asdict(order)))
         if resp.status_code != 200:
             raise Exception(f"Error calling payment service: {resp.status_code}: {resp.text()}")
 
@@ -196,37 +232,22 @@ def refund_payment(_, order: Order):
 # API to submit a new order
 @app.route("/orders", methods=["POST"])
 def submit_order():
-
     request_data = request.get_json()
     if not request_data:
         return """Invalid request. Should be in the form of {
             \"customer\": \"joe\", \"item\": \"apples\", \"qty\": 3}""", 400
-    if not request_data.get("customer"):
-        return "Missing customer name", 400
-    if not request_data.get("item"):
-        return "Missing item", 400
-
-    try:
-        qty = int(request_data.get("qty", 1))
-    except (TypeError, ValueError):
-        return "qty must be an integer", 400
-    if qty < 1:
-        return "qty must be >= 1", 400
 
     # `total` is optional. If not provided, the workflow prices the order
     # from the inventory catalog (unit price * qty).
-    total = float(request_data.get("total") or 0)
-
-    order = Order(
-        None,
-        request_data.get("customer"),
-        request_data.get("item"),
-        total,
-        qty)
-
-    # Generate a unique ID for this order
-    random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
-    order.id = f"order_{order.customer.lower()}_{random_suffix}"
+    try:
+        order = Order.new(
+            customer=request_data.get("customer"),
+            item=request_data.get("item"),
+            total=float(request_data.get("total") or 0),
+            qty=int(request_data.get("qty", 1)),
+        )
+    except (TypeError, ValueError) as e:
+        return f"Invalid order: {e}", 400
 
     wf_client = wf.DaprWorkflowClient()
     instance_id = wf_client.schedule_new_workflow(
@@ -235,7 +256,7 @@ def submit_order():
         instance_id=order.id)
 
     logging.info(f"Started workflow instance: {instance_id}")
-    
+
     return json.dumps({"instance_id": instance_id}), 202, {
         'Content-Type': 'application/json',
         'Location': url_for('check_order_status', order_id=instance_id, _external=True)
@@ -249,28 +270,18 @@ def check_order_status(order_id):
     if not state:
         return f"Order not found: {escape(order_id)}", 404
 
-    order_info = json.loads(state.serialized_input)
-    order = Order(
-        order_info.get('id'),
-        order_info.get('customer'),
-        order_info.get('item'),
-        order_info.get('total'),
-        order_info.get('qty', 1))
+    order = Order(**json.loads(state.serialized_input))
     resp = {
         "id": state.instance_id,
-        "details": order.__dict__,
+        "details": asdict(order),
         "status": state.runtime_status.name,
         "created_time": state.created_at.isoformat(),
         "last_updated_time": state.last_updated_at.isoformat(),
     }
 
     if state.serialized_output:
-        order_result_details = json.loads(state.serialized_output)
-        order_result = OrderResult(
-            order_result_details.get('id'),
-            order_result_details.get('success'),
-            order_result_details.get('message'))
-        resp["order_result"] = order_result.__dict__
+        order_result = OrderResult(**json.loads(state.serialized_output))
+        resp["order_result"] = asdict(order_result)
 
     if state.failure_details:
         resp["failure_details"] = {
@@ -287,14 +298,14 @@ def approve_order(order_id):
     request_data = request.get_json()
     if not request_data:
         return """Invalid request. Should be in the form of { \"approver\": \"joe\", \"approved\": true }""", 400
-    if not request_data.get("approver"):
-        return "Missing approver name", 400
-    if "approved" not in request_data:
-        return "Missing approved flag", 400
 
-    approval = Approval(
-        request_data.get("approver"),
-        request_data.get("approved"))
+    try:
+        approval = Approval(
+            approver=request_data.get("approver"),
+            approved=request_data.get("approved"),
+        )
+    except (TypeError, ValueError) as e:
+        return f"Invalid approval: {e}", 400
 
     wf_client = wf.DaprWorkflowClient()
     wf_client.raise_workflow_event(order_id, "approval", data=approval)
