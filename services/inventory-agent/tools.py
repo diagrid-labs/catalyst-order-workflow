@@ -9,7 +9,7 @@ import json
 import logging
 import os
 
-from dapr.clients import DaprClient
+from dapr.aio.clients import DaprClient
 from dapr_agents import tool
 from pydantic import BaseModel, Field
 
@@ -20,12 +20,12 @@ HORIZON_MIN = int(os.getenv("HORIZON_MIN", 6))
 logger = logging.getLogger("inventory_agent.tools")
 
 
-def _invoke(method: str, *, verb: str = "GET", data: dict | None = None) -> object:
-    with DaprClient() as d:
+async def _invoke(method: str, *, verb: str = "GET", data: dict | None = None) -> object:
+    async with DaprClient() as d:
         kwargs = {"http_verb": verb}
         if data is not None:
             kwargs["data"] = json.dumps(data)
-        resp = d.invoke_method(INVENTORY_APP_ID, method, **kwargs)
+        resp = await d.invoke_method(INVENTORY_APP_ID, method, **kwargs)
     return json.loads(resp.data.decode("utf-8"))
 
 
@@ -34,9 +34,9 @@ class _NoArgs(BaseModel):
 
 
 @tool(args_model=_NoArgs)
-def get_inventory_levels() -> dict:
+async def get_inventory_levels() -> dict:
     """Return the current inventory levels for all SKUs."""
-    return _invoke("api/v1/inventory")
+    return await _invoke("api/v1/inventory")
 
 
 class _SalesHistoryArgs(BaseModel):
@@ -48,9 +48,9 @@ class _SalesHistoryArgs(BaseModel):
 
 
 @tool(args_model=_SalesHistoryArgs)
-def get_sales_history(sku: str, window_min: int = SMA_WINDOW_MIN) -> dict:
+async def get_sales_history(sku: str, window_min: int = SMA_WINDOW_MIN) -> dict:
     """Return recent sales for an SKU summarized over the given window."""
-    return _invoke(
+    return await _invoke(
         f"api/v1/inventory/sales/history?sku={sku}&window_min={window_min}"
     )
 
@@ -68,7 +68,7 @@ class _ForecastArgs(BaseModel):
 
 
 @tool(args_model=_ForecastArgs)
-def forecast_demand(
+async def forecast_demand(
     sku: str,
     horizon_min: int = HORIZON_MIN,
     window_min: int = SMA_WINDOW_MIN,
@@ -76,20 +76,20 @@ def forecast_demand(
     """Forecast units sold for an SKU over the next `horizon_min` minutes,
     using the last `window_min` minutes of sales as the SMA window.
     """
-    return _invoke(
+    return await _invoke(
         f"api/v1/inventory/forecast?sku={sku}"
         f"&horizon_min={horizon_min}&window_min={window_min}"
     )
 
 
 @tool(args_model=_NoArgs)
-def get_pending_repositions() -> list:
+async def get_pending_repositions() -> list:
     """Return all reposition orders currently in flight.
 
     The agent must call this before placing a new reposition to avoid
     double-ordering.
     """
-    return _invoke("api/v1/inventory/orders/active")
+    return await _invoke("api/v1/inventory/orders/active")
 
 
 class _TriggerRepositionArgs(BaseModel):
@@ -100,7 +100,7 @@ class _TriggerRepositionArgs(BaseModel):
 
 
 @tool(args_model=_TriggerRepositionArgs)
-def trigger_reposition(items: dict[str, int]) -> dict:
+async def trigger_reposition(items: dict[str, int]) -> dict:
     """Place a reposition order for the given items.
 
     Starts a durable workflow that registers the order and adds it to the
@@ -109,7 +109,7 @@ def trigger_reposition(items: dict[str, int]) -> dict:
     — not on a timer. Returns the created order record (`id`, `items`,
     `placed_at`, `status: "placed"`).
     """
-    return _invoke("api/v1/inventory/orders", verb="POST", data={"items": items})
+    return await _invoke("api/v1/inventory/orders", verb="POST", data={"items": items})
 
 
 def build_tools() -> list:
