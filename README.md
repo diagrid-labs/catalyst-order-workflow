@@ -55,13 +55,17 @@ The `inventory-agent` service exposes the standard dapr-agents HTTP surface on p
 # 1. Make sure an LLM is reachable. The bundled component points at an
 #    in-cluster Ollama deployed via the otwld/ollama Helm chart. See
 #    deploy/ollama/values.yaml for the values used.
+#
+#    The values request a GPU (nvidia.com/gpu). For this to schedule, the
+#    cluster must be created with the minibox provider and the --enable-gpu
+#    flag, i.e.:
+#        one box dev up --provider minibox --enable-gpu
 helm repo add otwld https://helm.otwld.com/ && helm repo update otwld
 helm upgrade --install ollama otwld/ollama \
-  --kube-context kind-onebox-cp \
   --namespace ollama --create-namespace \
   -f deploy/ollama/values.yaml
 # First pod startup pulls qwen2.5:7b (~4.7 GB) into the PVC — wait for Ready.
-kubectl --context kind-onebox-cp -n ollama rollout status deploy/ollama
+kubectl -n ollama rollout status deploy/ollama
 
 # 2. Drive some sales so the forecasting tools have data to work with.
 curl -X POST http://localhost:3002/api/v1/inventory/restock
