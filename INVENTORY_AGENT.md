@@ -1,39 +1,31 @@
 # Inventory Agent
 
 An LLM-driven inventory assistant added to the catalyst-order-workflow demo.
-The agent answers questions about stock, forecasts demand, and places durable
-reposition orders. Reposition fulfillment lives in the inventory service as a
-pair of Dapr workflows; the agent reaches them via Dapr service invocation
-through a `trigger_reposition` tool.
+The agent answers questions about stock, forecasts demand, and adds stock for
+SKUs at risk of running out. Every capability is an endpoint on the inventory
+service, reached via Dapr service invocation.
 
 ## Requirements
 
 ### Functional
 - **Interactive, not autonomous.** Users trigger an agent run via
   `POST /agent/run`; the agent is reactive, no continuous loop.
-- **Capabilities exposed to the LLM** (five tools, see `tools.py`):
+- **Capabilities exposed to the LLM** (four tools, see `tools.py`):
   - Report current inventory levels.
   - Summarize recent sales for a SKU over a rolling window.
   - Forecast demand over a horizon using a simple moving average.
-  - List in-flight reposition orders.
-  - Place a new reposition order (one combined order for any number of SKUs).
+  - Add stock (one combined call for any number of SKUs).
 - **Decision rule** (LLM is prompted to follow it):
-  Order if `forecast(horizon) ≥ current_stock` **and** no in-flight order
-  exists for that SKU. Horizon defaults to 6 min (`HORIZON_MIN`) — roughly
-  the typical reposition turnaround plus a one-minute buffer.
-- **In-flight awareness.** The agent must avoid double-ordering an SKU that
-  already has a pending delivery.
+  Restock if `forecast(horizon) ≥ current_stock`. Horizon defaults to 6 min
+  (`HORIZON_MIN`).
+- **Immediate application.** Repositioned stock lands before the call returns,
+  so the agent re-reads levels rather than tracking orders in flight.
 
 ### Non-functional
-- **Durability of repositions.** Placing an order, the wait for delivery
-  confirmation, and stock application must survive process restarts. The
-  delivery workflow parks on an external `delivery_confirmed` event raised
-  via `POST /api/v1/inventory/orders/<id>/confirm`, so the wait can outlive
-  any process and the confirmer can amend quantities at arrival time.
 - **Separation of concerns.** The inventory service owns inventory state,
-  sales history, forecasting, and the reposition lifecycle. The agent host is
-  a thin LLM-over-tools layer with no domain endpoints of its own. The two
-  layers are independently testable.
+  sales history and forecasting. The agent host is a thin LLM-over-tools layer
+  with no domain endpoints of its own. The two layers are independently
+  testable.
 - **LLM via Catalyst Conversation API.** The LLM endpoint, model, and key
   live in a Dapr Conversation component (`resources/llm-provider.yaml`).
   Swapping providers (OpenAI, Ollama, Anthropic, …) is a YAML edit; no
@@ -57,18 +49,14 @@ through a `trigger_reposition` tool.
 ### Service layout
 ```
 services/
-├── inventory/                      # owns inventory + sales + reposition workflows
-│   ├── app.py                      # Flask endpoints + workflow runtime
-│   ├── order_state.py              # reposition state helpers
-│   ├── sales_state.py              # sales-history aggregation + forecast
-│   └── workflows/
-│       ├── __init__.py             # re-exports the workflows + activities
-│       ├── restock_order.py        # registers the order, starts delivery
-│       └── delivery.py             # waits for delivery_confirmed event, applies stock
+├── inventory/                      # owns inventory + sales history
+│   ├── app.py                      # Flask endpoints
+│   ├── state.py                    # state-store name + timestamp helper
+│   └── sales_state.py              # sales-history aggregation + forecast
 └── inventory-agent/                # LLM agent — no custom endpoints
     ├── app.py                      # AgentRunner.serve(agent) wrapper
     ├── agent.py                    # DurableAgent + system prompt
-    └── tools.py                    # five tools; Dapr service invocation into inventory
+    └── tools.py                    # four tools; Dapr service invocation into inventory
 resources/
 └── llm-provider.yaml               # Dapr Conversation component (LLM)
 ```
@@ -81,44 +69,28 @@ User → POST /agent/run                              (inventory-agent — provi
    DurableAgent workflow ─── LLM ↔ tools loop ──────┐
    (LLM via DaprChatClient → llm-provider component)│
         │                                            │
-        │       get_inventory_levels    ──svc-invoke──►  inventory service
-        │       get_sales_history       ──svc-invoke──►  inventory service
-        │       forecast_demand         ──svc-invoke──►  inventory service
-        │       get_pending_repositions ──svc-invoke──►  inventory service
-        │       trigger_reposition      ──svc-invoke──►  POST /api/v1/inventory/orders
-        │                                                │
-        ▼                                                ▼
-   instance_id returned                       restock_order_workflow
-   (poll GET /agent/instances/{id})            │
-                                               ├─ register_order activity
-                                               │     state: reposition:<id>
-                                               │     state: repositions:active
-                                               │
-                                               └─ start child: delivery_workflow
-                                                   │
-                                                   ├─ wait_for_external_event("delivery_confirmed")
-                                                   │     payload: {message?, amendments?}
-                                                   │     (raised by POST /api/v1/inventory/orders/<id>/confirm)
-                                                   └─ deliver_order activity
-                                                         applies amendments or original items
-                                                         marks record delivered
-                                                         records confirmation_message / amendments
-                                                         removes id from active list
+        │       get_inventory_levels ──svc-invoke──►  GET  /api/v1/inventory
+        │       get_sales_history    ──svc-invoke──►  GET  /api/v1/inventory/sales/history
+        │       forecast_demand      ──svc-invoke──►  GET  /api/v1/inventory/forecast
+        │       trigger_reposition   ──svc-invoke──►  POST /api/v1/inventory/reposition
+        │                                                  adds to each SKU's quantity
+        ▼                                                  and returns the new levels
+   instance_id returned
+   (poll GET /agent/instances/{id})
 ```
 
 ### Key endpoints (inventory service)
 | Verb | Path | Purpose |
 |---|---|---|
 | `GET`    | `/api/v1/inventory`                       | current levels — returns `[{name, quantity, price}, …]`; the unit price is catalog data from `INVENTORY_ITEMS` and is never mutated by state operations |
-| `POST`   | `/api/v1/inventory/reserve`               | reserves `qty` units of one SKU (default 1) — atomic decrement + sale-history append (etag-guarded, retries on conflict), publishes `sales` event |
+| `POST`   | `/api/v1/inventory/reserve`               | provisionally take `qty` units of one SKU out of stock (default 1) — etag-guarded decrement plus a `pending` reservation record; no sale is recorded |
+| `POST`   | `/api/v1/inventory/confirm`               | turn an order's reservation into a sale; publishes to the `sales` topic. Body `{id}` |
+| `POST`   | `/api/v1/inventory/release`               | give a pending reservation's stock back. Body `{id}` |
+| `POST`   | `/sales`                                  | subscriber for the `sales` topic — appends the sale to `sales:<sku>` |
 | `POST`   | `/api/v1/inventory/restock`               | demo reset — destructively set every SKU's quantity to 100 (prices are not touched) |
 | `POST`   | `/api/v1/inventory/reposition`            | additive `{items: {sku: qty}}` — adds to quantity only (prices are not touched) |
 | `GET`    | `/api/v1/inventory/sales/history?sku=…`   | recent-window sales summary for an SKU |
 | `GET`    | `/api/v1/inventory/forecast?sku=…&horizon_min=…&window_min=…` | SMA-based forecast; `window_min` defaults to `SMA_WINDOW_MIN` |
-| `POST`   | `/api/v1/inventory/orders`                | start a `restock_order_workflow` |
-| `GET`    | `/api/v1/inventory/orders/active`         | list in-flight orders |
-| `GET`    | `/api/v1/inventory/orders/<id>`           | get a specific order |
-| `POST`   | `/api/v1/inventory/orders/<id>/confirm`   | raise `delivery_confirmed` on the delivery workflow; body `{message?, amendments?: {sku: qty}}`. Amendments override the originally ordered quantities. |
 
 ### Key endpoints (agent service)
 All provided by `AgentRunner.serve()`; there is no hand-written endpoint code
@@ -159,22 +131,19 @@ To run against OpenAI, drop `endpoint`, change `key` to the real API key, and
 pick a model. No agent code changes.
 
 ### Sales history
-The inventory service records each `/reserve` directly into the state store
-under `sales:<sku>` (capped at 60 entries), then publishes a `sales` event
-on the `pubsub` component for any analytics subscribers. The agent does not
-subscribe to anything — it pulls history and forecasts via the two `GET`
-endpoints above.
+A sale is recorded when an order completes, not when its stock is reserved, so
+a failed order leaves no trace in the history. `/confirm` publishes to the
+`sales` topic on the `pubsub` component; the inventory service subscribes to
+that topic itself and appends the entry to `sales:<sku>` (capped at 60
+entries). The agent does not subscribe to anything — it pulls history and
+forecasts via the two `GET` endpoints above.
 
-### Reposition state
-Two key kinds in the shared Dapr state store:
-- `reposition:<order_id>` — full record. At placement time: `items`,
-  `placed_at`, `status: "placed"`, `delivered_at: null`. On delivery,
-  `status: "delivered"`, `delivered_at`, `delivered_items` (the quantities
-  actually applied — equal to `items` unless amended), and, when present,
-  `confirmation_message` and `amendments`. Kept forever (demo).
-- `repositions:active` — list of currently in-flight ids. Populated by
-  `register_order`, drained by `deliver_order`. Single source of truth for
-  the `get_pending_repositions` tool.
+### Reservation state
+One key kind beyond the per-SKU quantity: `reservation:<order_id>`, holding
+`{order_id, status, sku, qty, remaining, reserved_at}` where `status` is
+`pending`, `sold` or `released`. Pending records outlive the longest possible
+order workflow (48h, since the approval gate alone allows 24h); terminal ones
+expire after an hour, as their only remaining job is to absorb a retried call.
 
 ### Agent host (`services/inventory-agent/app.py`)
 The entire host is:

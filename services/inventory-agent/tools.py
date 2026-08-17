@@ -1,8 +1,8 @@
 """Tools exposed to the inventory-agent.
 
 Every tool is a thin HTTP call to the inventory service via Dapr service
-invocation. The inventory service owns inventory state, sales history,
-forecasting, and reposition orders — the agent only orchestrates over them.
+invocation. The inventory service owns inventory state, sales history and
+forecasting — the agent only orchestrates over them.
 """
 
 import json
@@ -82,16 +82,6 @@ async def forecast_demand(
     )
 
 
-@tool(args_model=_NoArgs)
-async def get_pending_repositions() -> list:
-    """Return all reposition orders currently in flight.
-
-    The agent must call this before placing a new reposition to avoid
-    double-ordering.
-    """
-    return await _invoke("api/v1/inventory/orders/active")
-
-
 class _TriggerRepositionArgs(BaseModel):
     items: dict[str, int] = Field(
         ...,
@@ -101,15 +91,14 @@ class _TriggerRepositionArgs(BaseModel):
 
 @tool(args_model=_TriggerRepositionArgs)
 async def trigger_reposition(items: dict[str, int]) -> dict:
-    """Place a reposition order for the given items.
+    """Add the given quantities to stock.
 
-    Starts a durable workflow that registers the order and adds it to the
-    in-flight list immediately. The stock is applied later, when the
-    delivery is confirmed via `POST /api/v1/inventory/orders/<id>/confirm`
-    — not on a timer. Returns the created order record (`id`, `items`,
-    `placed_at`, `status: "placed"`).
+    The stock is applied immediately, so the new levels are visible to the
+    next `get_inventory_levels` call. Returns the updated quantity per SKU.
     """
-    return await _invoke("api/v1/inventory/orders", verb="POST", data={"items": items})
+    return await _invoke(
+        "api/v1/inventory/reposition", verb="POST", data={"items": items}
+    )
 
 
 def build_tools() -> list:
@@ -117,6 +106,5 @@ def build_tools() -> list:
         get_inventory_levels,
         get_sales_history,
         forecast_demand,
-        get_pending_repositions,
         trigger_reposition,
     ]

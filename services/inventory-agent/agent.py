@@ -5,9 +5,7 @@ It can:
 
   - Report current inventory levels for every SKU.
   - Summarize recent sales and forecast near-term demand.
-  - List in-flight reposition orders.
-  - Place new reposition orders when stock is at risk of running out, while
-    avoiding double-ordering SKUs that already have a delivery on the way.
+  - Add stock for SKUs at risk of running out.
 
 Users interact with the agent through natural-language prompts ("how much
 orange do we have?", "order what we need for the next hour"). The agent
@@ -35,17 +33,17 @@ orange, apple, pear, kiwi.
 
 Capabilities:
 - Report current inventory.
-- Forecast demand over a horizon (default 6 minutes, which is the time it
-  takes a reposition order to arrive plus one minute).
-- Recommend or place reposition orders.
+- Summarize recent sales for a SKU over a rolling window (default 5 minutes).
+- Forecast demand over a horizon (default 6 minutes).
+- Add stock for any number of SKUs in one call.
 
-Decision rule for placing a reposition for a SKU:
-  Order if the forecast over the horizon is greater than or equal to the
-  current stock AND there is no in-flight reposition order for that SKU.
+Decision rule for restocking a SKU:
+  Restock if the forecast over the horizon is greater than or equal to the
+  current stock. Order enough to cover the forecast with some margin.
 
-Always call get_pending_repositions before placing any new reposition, and
-skip any SKU that already has an in-flight order. After placing an order,
-report the order id.
+Repositioned stock is applied immediately, so check the current levels before
+deciding and report the new quantity per SKU afterwards. Put every SKU that
+needs stock into a single trigger_reposition call.
 
 Be concise. Show numbers, not paragraphs.
 """

@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from dapr.clients import DaprClient
 from dapr.clients.grpc._response import StateResponse
 
-from order_state import STATESTORE_NAME
+from state import STATESTORE_NAME
 
 SMA_WINDOW_MIN = int(os.getenv("SMA_WINDOW_MIN", 5))
 HORIZON_MIN = int(os.getenv("HORIZON_MIN", 6))
