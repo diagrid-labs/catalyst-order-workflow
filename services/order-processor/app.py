@@ -58,6 +58,17 @@ class Order:
             qty=qty,
         )
 
+class OrderFailed(Exception):
+    """An order that cannot go through for a business reason: out of stock,
+    rejected, past its approval deadline, or declined by payments.
+
+    Raised so that every failure leaves the happy path the same way and is
+    compensated in one place. The workflow completes carrying an unsuccessful
+    result rather than failing, which is how a declined order stays
+    distinguishable from a broken one.
+    """
+
+
 @dataclass
 class Approval:
     approver: str
@@ -104,89 +115,90 @@ def _to_order(value) -> Order:
 # Dapr Workflow Definition for Order Processing
 
 def process_order_workflow(ctx: wf.DaprWorkflowContext, order: Order):
-    yield ctx.call_activity(notify, input=f"Processing order for {order.customer}. Item: {order.item}, Qty: {order.qty}")
+    # Compensations for the steps taken so far, unwound in reverse by the one
+    # handler below. Each is registered *before* the step it undoes, because a
+    # failed call's outcome is ambiguous: the server may have committed before
+    # the response was lost. Everything on this stack must therefore be
+    # best-effort and tolerate having nothing to undo.
+    compensations = []
 
-    # If the order didn't come with an explicit total, price it from the
-    # inventory catalog (unit price * quantity).
-    if not order.total:
-        order.total = yield ctx.call_activity(price_order, input=order)
-        yield ctx.call_activity(notify, input=f"Priced order at {order.total} ({order.item} x{order.qty})")
-
-    # Call into the inventory service to reserve the items in this order.
-    # If the activity raises (e.g. response parse error, transport blip after
-    # the server-side commit) the reservation may have landed on the inventory
-    # side. Fire release_inventory as a best-effort compensation, then let
-    # the workflow fail with the original error.
     try:
+        yield ctx.call_activity(notify, input=f"Processing order for {order.customer}. Item: {order.item}, Qty: {order.qty}")
+
+        # If the order didn't come with an explicit total, price it from the
+        # inventory catalog (unit price * quantity).
+        if not order.total:
+            order.total = yield ctx.call_activity(price_order, input=order)
+            yield ctx.call_activity(notify, input=f"Priced order at {order.total} ({order.item} x{order.qty})")
+
+        # Reserve the items. The reservation is provisional: it moves stock but
+        # records no sale until confirm_inventory runs at the end.
+        compensations.append(release_inventory)
         result = yield ctx.call_activity(reserve_inventory, input=order)
-    except Exception as e:
-        yield ctx.call_activity(notify, input=f"Error reserving inventory: {e}; releasing any reserved stock")
-        yield ctx.call_activity(release_inventory, input=order)
-        raise
+        if not result.success:
+            raise OrderFailed(result.message)
 
-    if not result.success:
-        yield ctx.call_activity(notify, input=f"Failed to reserve inventory: {result.message}")
-        return OrderResult(order.id, False, result.message)
+        yield ctx.call_activity(notify, input=f"Reserved inventory: {order.item} x{order.qty}")
 
-    yield ctx.call_activity(notify, input=f"Reserved inventory: {order.item} x{order.qty}")
+        # Orders over $1,000 require human approval
+        if order.total >= APPROVAL_THRESHOLD:
+            approval_deadline = ctx.current_utc_datetime + APPROVAL_TIMEOUT
+            yield ctx.call_activity(notify, input=f"Waiting for approval since order >= {APPROVAL_THRESHOLD}. Deadline = {approval_deadline}.")
 
-    # Orders over $1,000 require human approval
-    if order.total >= APPROVAL_THRESHOLD:
-        approval_deadline = ctx.current_utc_datetime + APPROVAL_TIMEOUT
-        yield ctx.call_activity(notify, input=f"Waiting for approval since order >= {APPROVAL_THRESHOLD}. Deadline = {approval_deadline}.")
+            # Block the workflow on either an approval event or a timeout
+            approval_task = ctx.wait_for_external_event("approval")
+            timeout_expired_task = ctx.create_timer(approval_deadline)
+            winner = yield wf.when_any([approval_task, timeout_expired_task])
 
-        # Block the workflow on either an approval event or a timeout
-        approval_task = ctx.wait_for_external_event("approval")
-        timeout_expired_task = ctx.create_timer(approval_deadline)
-        winner = yield wf.when_any([approval_task, timeout_expired_task])
+            if winner == timeout_expired_task:
+                raise OrderFailed("Approval deadline expired.")
 
-        if winner == timeout_expired_task:
-            message = "Approval deadline expired."
-            yield ctx.call_activity(notify, input=message)
-            return OrderResult(order.id, False, message)
+            # Check the approval result
+            approval: Approval = yield approval_task
+            if not approval.approved:
+                raise OrderFailed(f"Order was rejected by {approval.approver}.")
 
-        # Check the approval result
-        approval: Approval = yield approval_task
-        if not approval.approved:
-            message = f"Order was rejected by {approval.approver}."
-            yield ctx.call_activity(notify, input=message)
-            return OrderResult(order.id, False, message)
+            yield ctx.call_activity(notify, input=f"Order was approved by {approval.approver}.")
 
-        yield ctx.call_activity(notify, input=f"Order was approved by {approval.approver}.")
+        yield ctx.call_activity(notify, input="Attempting to take payment")
 
-    yield ctx.call_activity(notify, input="Attempting to take payment")
-
-    # Submit the order to the payment service
-    try:
+        # Submit the order to the payment service
+        compensations.append(refund_payment)
         result = yield ctx.call_activity(submit_payment, input=order)
         if not result.success:
-            yield ctx.call_activity(notify, input=f"Payment failed for order: {result.message}")
-            return OrderResult(order.id, False, result.message)
-    except Exception as e:
-        yield ctx.call_activity(notify, input=f"Error taking payment: {str(e)}")
-        raise
+            raise OrderFailed(result.message)
 
-    yield ctx.call_activity(notify, input="Payment processed")
+        yield ctx.call_activity(notify, input="Payment processed")
 
-    yield ctx.call_activity(notify, input="Order submitted for shipping")
+        yield ctx.call_activity(notify, input="Order submitted for shipping")
 
-    # Submit the order for shipping
-    try:
         yield ctx.call_activity(submit_order_to_shipping, input=order)
+
+        yield ctx.call_activity(notify, input="Shipment scheduled")
+
+        # Turn the reservation into a sale. The order has already shipped, so a
+        # failure here must not unwind the compensations: report it and let the
+        # order stand. The cost is a missing sales-history entry, which only
+        # degrades the demand forecast.
+        try:
+            confirmation = yield ctx.call_activity(confirm_inventory, input=order)
+            if not confirmation.success:
+                yield ctx.call_activity(notify, input=f"Could not confirm reservation: {confirmation.message}")
+        except Exception as e:
+            yield ctx.call_activity(notify, input=f"Could not confirm reservation: {e}")
+
+        yield ctx.call_activity(notify, input=f"Order processed for {order.customer}. Item: {order.item}, Qty: {order.qty}, Total: {order.total}")
+
+        return OrderResult(order.id, True, "Order processed")
+
     except Exception as e:
-        # Shipping failed, so we need to refund the payment
-        yield ctx.call_activity(notify, input=f"Error submitting order for shipping: {str(e)}")
-        yield ctx.call_activity(refund_payment, input=order)
-        yield ctx.call_activity(notify, input="Payment refunded")
+        for compensation in reversed(compensations):
+            yield ctx.call_activity(compensation, input=order)
+        yield ctx.call_activity(notify, input=f"Order failed: {e}")
 
-        # Allow the workflow to fail with the original failure details
+        if isinstance(e, OrderFailed):
+            return OrderResult(order.id, False, str(e))
         raise
-
-    yield ctx.call_activity(notify, input="Shipment scheduled")
-
-    yield ctx.call_activity(notify, input=f"Order processed for {order.customer}. Item: {order.item}, Qty: {order.qty}, Total: {order.total}")
-
-    return OrderResult(order.id, True, "Order processed")
 
 def notify(ctx: wf.WorkflowActivityContext, message: str):
     logging.info(f"Sending notification: {message}")
@@ -227,13 +239,32 @@ def reserve_inventory(_, order: Order) -> InventoryResult:
         return inventory_result
 
 
+def confirm_inventory(_, order: Order) -> InventoryResult:
+    """Turn the order's reservation into a sale.
+
+    Runs once the order has shipped; until it does, the reserved stock carries
+    no sales record.
+    """
+    order = _to_order(order)
+    logging.info(f"Confirming inventory reservation for order: {order}")
+    with DaprClient() as d:
+        resp = d.invoke_method(
+            "inventory", "api/v1/inventory/confirm",
+            http_verb="POST", data=json.dumps(asdict(order)),
+        )
+        if resp.status_code != 200:
+            raise Exception(f"Error calling inventory service: {resp.status_code}")
+        inventory_result = InventoryResult(**json.loads(resp.data.decode("utf-8")))
+        logging.info(f"Confirmation result: {inventory_result}")
+        return inventory_result
+
+
 def release_inventory(_, order: Order):
     """Best-effort compensation for `reserve_inventory`.
 
-    Called when reserve raises or a later step in the same try-block fails:
-    the server-side reservation may already have committed, so we try to
-    put the stock back. Errors are logged, not raised, so compensation
-    never masks the original failure.
+    Puts the reserved stock back. The reservation may never have committed, in
+    which case the inventory service treats this as a no-op. Errors are logged,
+    not raised, so compensation never masks the original failure.
     """
     order = _to_order(order)
     logging.info(f"Releasing inventory for order: {order}")
@@ -273,12 +304,26 @@ def submit_payment(_, order: Order) -> PaymentResult:
         return payment_result
 
 def refund_payment(_, order: Order):
+    """Best-effort compensation for `submit_payment`.
+
+    The charge may never have been taken, and errors are logged rather than
+    raised: a failure here must not stop the compensations behind it from
+    running, nor mask the failure that triggered the unwind.
+    """
     order = _to_order(order)
     logging.info(f"Refunding payment for order: {order}")
-    with DaprClient() as d:
-        resp = d.invoke_method("payments", f"api/v1/payments/{order.id}/refunds", http_verb="POST", data=json.dumps(asdict(order)))
-        if resp.status_code != 200:
-            raise Exception(f"Error calling payment service: {resp.status_code}: {resp.text()}")
+    try:
+        with DaprClient() as d:
+            resp = d.invoke_method(
+                "payments", f"api/v1/payments/{order.id}/refunds",
+                http_verb="POST", data=json.dumps(asdict(order)),
+            )
+            if resp.status_code != 200:
+                logging.warning(
+                    f"Payment refund returned {resp.status_code} for {order.id}"
+                )
+    except Exception as e:
+        logging.warning(f"Payment refund call failed for {order.id}: {e}")
 
 
 # API to submit a new order
@@ -379,6 +424,7 @@ def main():
     wf_runtime.register_activity(notify)
     wf_runtime.register_activity(price_order)
     wf_runtime.register_activity(reserve_inventory)
+    wf_runtime.register_activity(confirm_inventory)
     wf_runtime.register_activity(release_inventory)
     wf_runtime.register_activity(submit_payment)
     wf_runtime.register_activity(submit_order_to_shipping)

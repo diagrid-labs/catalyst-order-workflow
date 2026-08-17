@@ -52,8 +52,8 @@ def deliver_order(_: wf.WorkflowActivityContext, payload: dict) -> dict:
 
     Per-SKU stock updates are read-modify-write without an etag — fine for
     the demo where deliveries don't overlap, but two concurrent deliveries
-    touching the same SKU could lose an update. /reserve is the path that
-    needs to be concurrency-safe and is etag-guarded there.
+    touching the same SKU could lose an update. /reserve and /release are the
+    paths that need to be concurrency-safe and are etag-guarded there.
     """
     order_id = payload["id"]
     delivered_items = payload["items"]

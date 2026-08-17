@@ -42,6 +42,19 @@ Content-Type: application/json
 
 {"approver": "kendall", "approved": true}
 
+### Sales history for a SKU. Sales are recorded when an order completes, not
+### when its stock is reserved, so a failed order leaves no trace here.
+GET http://localhost:3002/api/v1/inventory/sales/history?sku=orange
+
+### Deactivate shipping to force the compensation path. An order submitted now
+### fails at the shipping step, and the workflow unwinds in reverse: the payment
+### is refunded and the reserved stock goes back. Check the inventory before and
+### after to see the quantity restored.
+POST http://localhost:3004/shipping/deactivate
+
+### Reactivate shipping
+POST http://localhost:3004/shipping/activate
+
 ### Place a reposition order directly (bypasses the agent)
 POST http://localhost:3002/api/v1/inventory/orders
 Content-Type: application/json
