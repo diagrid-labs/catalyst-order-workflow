@@ -54,8 +54,10 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Anchored to the repo root: unanchored, these also matched
+# services/notifications/src/lib, which is application source.
+/lib/
+/lib64/
 parts/
 sdist/
 var/
