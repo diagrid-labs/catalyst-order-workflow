@@ -18,7 +18,7 @@ class Delivery:
 @dataclass
 class DeliveryResult:
     order_id: str
-    delivered: bool
+    dispatched: bool
     message: str
 
 
