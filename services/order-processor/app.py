@@ -14,7 +14,6 @@ from models import (
     InventoryResult,
     Order,
     OrderResult,
-    PaymentResult,
     to_order,
 )
 
@@ -23,10 +22,13 @@ APP_PORT = os.getenv("APP_PORT", "3006")
 APPROVAL_THRESHOLD = 1000.0
 APPROVAL_TIMEOUT = timedelta(hours=24)
 
-# The delivery workflow is hosted by the shipping service, which owns
-# fulfilment. It is called by name across the app boundary.
+# Fulfilment and payment are owned by the services that do them, each hosting
+# its own workflow. Both are called by name across the app boundary.
 SHIPPING_APP_ID = os.getenv("SHIPPING_APP_ID", "shipping")
 DELIVERY_WORKFLOW = "delivery_workflow"
+
+PAYMENTS_APP_ID = os.getenv("PAYMENTS_APP_ID", "payments")
+PAYMENT_WORKFLOW = "payment_workflow"
 
 app = Flask(__name__)
 
@@ -98,9 +100,20 @@ def process_order_workflow(ctx: wf.DaprWorkflowContext, order: Order):
 
         yield ctx.call_activity(notify, input="Attempting to take payment")
 
-        # Submit the order to the payment service
+        # Take the money. The payments service owns the charge, so this runs as
+        # a child workflow there; a declined card comes back as an unsuccessful
+        # result rather than an error.
         compensations.append(refund_payment)
-        result = yield ctx.call_activity(submit_payment, input=order)
+        result = yield ctx.call_child_workflow(
+            PAYMENT_WORKFLOW,
+            input={
+                "order_id": order.id,
+                "customer": order.customer,
+                "total": order.total,
+            },
+            instance_id=f"payment_{order.id}",
+            app_id=PAYMENTS_APP_ID,
+        )
         if not result.success:
             raise OrderFailed(result.message)
 
@@ -123,10 +136,10 @@ def process_order_workflow(ctx: wf.DaprWorkflowContext, order: Order):
         except Exception as e:
             yield ctx.call_activity(notify, input=f"Could not confirm reservation: {e}")
 
-        # Fulfil the order. The child runs prepare -> dispatch -> deliver with
-        # the transit wait in between, so the order stays running until the
-        # goods arrive. A failure in there unwinds the compensations like any
-        # other step: the goods go back on the shelf, the customer is refunded.
+        # Fulfil the order. The shipping service owns getting the goods out, so
+        # this runs as a child workflow there: prepare, then dispatch. A failure
+        # in either unwinds the compensations like any other step, putting the
+        # goods back on the shelf and refunding the customer.
         compensations.append(return_inventory)
         yield ctx.call_child_workflow(
             DELIVERY_WORKFLOW,
@@ -265,22 +278,8 @@ def submit_order_to_shipping(_, order: Order):
         if resp.status_code != 200:
             raise Exception(f"Error calling shipping service: {resp.status_code}: {resp.text()}")
 
-def submit_payment(_, order: Order) -> PaymentResult:
-    order = to_order(order)
-    logging.info(f"Submitting payment for order: {order}")
-    with DaprClient() as d:
-        resp = d.invoke_method("payments", "api/v1/payments", http_verb="POST", data=json.dumps(asdict(order)))
-        payment_result = PaymentResult(**json.loads(resp.data.decode("utf-8")))
-
-        if resp.status_code != 201:
-            if 'declined' not in payment_result.message:
-                raise Exception(f"Error calling payment service: {resp.status_code}: {resp.text()}")
-
-        logging.info(f"Payment result: {payment_result}")
-        return payment_result
-
 def refund_payment(_, order: Order):
-    """Best-effort compensation for `submit_payment`.
+    """Best-effort compensation for the payment workflow.
 
     The charge may never have been taken, and errors are logged rather than
     raised: a failure here must not stop the compensations behind it from
@@ -403,7 +402,6 @@ def main():
     wf_runtime.register_activity(confirm_inventory)
     wf_runtime.register_activity(return_inventory)
     wf_runtime.register_activity(release_inventory)
-    wf_runtime.register_activity(submit_payment)
     wf_runtime.register_activity(submit_order_to_shipping)
     wf_runtime.register_activity(refund_payment)
     wf_runtime.start()  # non-blocking

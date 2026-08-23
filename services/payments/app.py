@@ -1,6 +1,10 @@
 import logging
 import os
+
+import dapr.ext.workflow as wf
 from flask import Flask, request, jsonify, make_response
+
+import payment
 
 APP_PORT = int(os.getenv("APP_PORT", 3003))
 
@@ -25,7 +29,7 @@ def create_charge():
     logging.info(f"Processing payment charge for order: {order_data}")
     
     return make_response(
-        jsonify({"id": order_data['id'], "success": True, "message": "Payment processed successfully"}),
+        jsonify({"id": order_data['order_id'], "success": True, "message": "Payment processed successfully"}),
         201
     )
 
@@ -65,8 +69,14 @@ def health_check():
 
 
 def main():
-    # Start the Flask app server
-    app.run(host='0.0.0.0', port=APP_PORT, debug=False)
+    logging.info("Starting payment workflow runtime...")
+    wf_runtime = wf.WorkflowRuntime()
+    payment.register(wf_runtime)
+    wf_runtime.start()
+
+    app.run(host='0.0.0.0', port=APP_PORT, debug=False, use_reloader=False)
+
+    wf_runtime.shutdown()
 
 
 if __name__ == "__main__":

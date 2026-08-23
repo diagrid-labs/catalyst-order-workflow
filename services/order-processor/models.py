@@ -75,13 +75,6 @@ class InventoryResult:
     remaining: int | None = None
 
 
-@dataclass
-class PaymentResult:
-    id: str
-    success: bool
-    message: str
-
-
 def to_order(value) -> Order:
     """Rebuild an Order at an activity boundary.
 
