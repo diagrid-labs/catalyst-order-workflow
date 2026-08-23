@@ -8,8 +8,8 @@ exposes the standard durable-agent HTTP surface:
   POST /agent/instances/{id}/terminate   — terminate a running instance
   POST /agent/instances/{id}/purge       — purge instance state
 
-See ``services/inventory-agent/agent.py`` for the agent definition and
-``services/inventory-agent/tools.py`` for the capabilities the LLM can call.
+See ``agent.py`` for the agent definition and
+``tools.py`` for the capabilities the LLM can call.
 """
 
 import logging
@@ -17,7 +17,7 @@ import os
 
 from dapr_agents.workflow.runners import AgentRunner
 
-from agent import build_agent
+from inventory_agent.agent import build_agent
 
 APP_PORT = int(os.getenv("APP_PORT", 3005))
 

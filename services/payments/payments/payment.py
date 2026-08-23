@@ -15,7 +15,7 @@ import dapr.ext.workflow as wf
 from dapr.clients import DaprClient
 
 import notifications
-from models import Payment, PaymentResult, to_payment
+from payments.models import Payment, PaymentResult, to_payment
 
 logger = logging.getLogger("payments.payment")
 

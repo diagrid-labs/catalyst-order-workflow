@@ -4,7 +4,7 @@ import os
 import dapr.ext.workflow as wf
 from flask import Flask, jsonify, request
 
-import delivery
+from shipping import delivery
 
 APP_PORT = os.getenv("APP_PORT", "3004")
 

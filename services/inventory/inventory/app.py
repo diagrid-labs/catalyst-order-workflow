@@ -7,7 +7,7 @@ from dapr.clients import DaprClient
 from dapr.clients.grpc._state import StateItem
 from flask import Flask, jsonify, make_response, request
 
-from sales_state import (
+from inventory.sales_state import (
     HORIZON_MIN,
     SMA_WINDOW_MIN,
     _decode_history,
@@ -16,7 +16,7 @@ from sales_state import (
     sales_key,
     summarize,
 )
-from state import STATESTORE_NAME, now_iso
+from inventory.state import STATESTORE_NAME, now_iso
 
 APP_PORT = int(os.getenv("APP_PORT", 3002))
 PUBSUB_NAME = os.getenv("PUBSUB_NAME", "pubsub")

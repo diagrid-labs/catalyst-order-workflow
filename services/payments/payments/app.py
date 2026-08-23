@@ -4,7 +4,7 @@ import os
 import dapr.ext.workflow as wf
 from flask import Flask, request, jsonify, make_response
 
-import payment
+from payments import payment
 
 APP_PORT = int(os.getenv("APP_PORT", 3003))
 

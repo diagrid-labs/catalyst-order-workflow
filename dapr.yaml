@@ -5,6 +5,7 @@ common:
   daprdLogDestination: "console"
   resourcesPaths: ["./resources"]
   env:
+    GRPC_DEFAULT_SSL_ROOTS_FILE_PATH: /home/pablo/.onebox/tls/ca.crt
     # Each app runs with its own directory as the working directory, so this
     # puts ../../shared on the import path for the modules both workflows use.
     PYTHONPATH: ../../shared
@@ -12,14 +13,14 @@ apps:
   - appID: inventory
     appPort: 3002
     appDirPath: ./services/inventory
-    command: ["python3", "app.py"]
+    command: ["python3", "-m", "inventory.app"]
   - appID: order-processor
     appDirPath: ./services/order-processor
-    command: ["python3", "app.py"]
+    command: ["python3", "-m", "order_processor.app"]
   - appID: payments
     appPort: 3003
     appDirPath: ./services/payments
-    command: ["python3", "app.py"]
+    command: ["python3", "-m", "payments.app"]
   - appID: notifications
     appPort: 8080
     appDirPath: ./services/notifications
@@ -27,8 +28,8 @@ apps:
   - appID: shipping
     appPort: 3004
     appDirPath: ./services/shipping
-    command: ["python3", "app.py"]
+    command: ["python3", "-m", "shipping.app"]
   - appID: inventory-agent
     appPort: 3005
     appDirPath: ./services/inventory-agent
-    command: ["python3", "app.py"]
+    command: ["python3", "-m", "inventory_agent.app"]

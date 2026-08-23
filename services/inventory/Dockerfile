@@ -6,4 +6,4 @@ COPY . .
 RUN pip install requests
 EXPOSE 3002
 ENTRYPOINT ["python"]
-CMD ["app.py"]
+CMD ["-m", "inventory.app"]

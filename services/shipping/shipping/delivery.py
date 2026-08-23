@@ -16,7 +16,7 @@ import dapr.ext.workflow as wf
 from dapr.clients import DaprClient
 
 import notifications
-from models import Delivery, DeliveryResult, to_delivery
+from shipping.models import Delivery, DeliveryResult, to_delivery
 
 logger = logging.getLogger("shipping.delivery")
 

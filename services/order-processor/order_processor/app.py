@@ -13,8 +13,8 @@ import dapr.ext.workflow as wf
 from flask import Flask, jsonify, request, url_for
 from markupsafe import escape
 
-import order as order_workflow
-from models import Approval, Order, OrderResult
+from order_processor import order as order_workflow
+from order_processor.models import Approval, Order, OrderResult
 
 APP_PORT = os.getenv("APP_PORT", "3006")
 

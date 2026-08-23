@@ -49,17 +49,24 @@ service, reached via Dapr service invocation.
 ### Service layout
 ```
 services/
-├── inventory/                      # owns inventory + sales history
-│   ├── app.py                      # Flask endpoints
-│   ├── state.py                    # state-store name + timestamp helper
-│   └── sales_state.py              # sales-history aggregation + forecast
-└── inventory-agent/                # LLM agent — no custom endpoints
-    ├── app.py                      # AgentRunner.serve(agent) wrapper
-    ├── agent.py                    # DurableAgent + system prompt
-    └── tools.py                    # four tools; Dapr service invocation into inventory
+├── inventory/                          # owns inventory + sales history
+│   └── inventory/
+│       ├── app.py                      # Flask endpoints
+│       ├── state.py                    # state-store name + timestamp helper
+│       └── sales_state.py              # sales-history aggregation + forecast
+└── inventory-agent/                    # LLM agent — no custom endpoints
+    └── inventory_agent/
+        ├── app.py                      # AgentRunner.serve(agent) wrapper
+        ├── agent.py                    # DurableAgent + system prompt
+        └── tools.py                    # four tools; Dapr service invocation into inventory
 resources/
-└── llm-provider.yaml               # Dapr Conversation component (LLM)
+└── llm-provider.yaml                   # Dapr Conversation component (LLM)
 ```
+
+Each service directory keeps its own `requirements.txt` and `Dockerfile`; the
+Python modules sit in a package inside it, named with an underscore because a
+hyphen is not legal in an import. `dapr.yaml` starts each app as
+`python3 -m <package>.app`.
 
 ### Flow
 ```
@@ -148,7 +155,7 @@ compensation list and exactly one will credit the stock back. Pending records ou
 order workflow (48h, since the approval gate alone allows 24h); terminal ones
 expire after an hour, as their only remaining job is to absorb a retried call.
 
-### Agent host (`services/inventory-agent/app.py`)
+### Agent host (`inventory_agent/app.py`)
 The entire host is:
 
 ```python
@@ -165,7 +172,7 @@ and `/agent/instances/{id}/purge` routes on it, and runs uvicorn. No
 Flask, no manual `DaprWorkflowClient.schedule_new_workflow`, no
 `_dapr_alternate_name` stub.
 
-### Agent definition (`services/inventory-agent/agent.py`)
+### Agent definition (`inventory_agent/agent.py`)
 `DurableAgent` is configured with three Dapr-backed concerns (the store name
 comes from `STATESTORE_NAME`, default `statestore`):
 

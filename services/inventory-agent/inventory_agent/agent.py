@@ -20,7 +20,7 @@ from dapr_agents.llm import DaprChatClient
 from dapr_agents.memory import ConversationDaprStateMemory
 from dapr_agents.storage.daprstores.stateservice import StateStoreService
 
-from tools import build_tools
+from inventory_agent.tools import build_tools
 
 LLM_COMPONENT = os.getenv("LLM_COMPONENT", "llm-provider")
 STATESTORE_NAME = os.getenv("STATESTORE_NAME", "statestore")

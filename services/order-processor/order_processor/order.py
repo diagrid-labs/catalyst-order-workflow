@@ -19,7 +19,7 @@ import dapr.ext.workflow as wf
 from dapr.clients import DaprClient
 
 import notifications
-from models import Approval, InventoryResult, Order, OrderResult, to_order
+from order_processor.models import Approval, InventoryResult, Order, OrderResult, to_order
 
 APPROVAL_THRESHOLD = 1000.0
 APPROVAL_TIMEOUT = timedelta(hours=24)
