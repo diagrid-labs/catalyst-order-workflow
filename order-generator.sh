@@ -28,25 +28,7 @@ done
 # Arrays of sample data
 CUSTOMERS=("alice" "bob" "charlie" "david" "emma" "frank" "grace" "hannah" "ian" "julia"
            "kevin" "lucy" "michael" "nina" "oliver" "penny" "quinn" "robert" "sarah" "thomas")
-
-# Fetch the current inventory from the inventory service so the generator
-# only ever orders SKUs that actually exist in the catalog.
-inventory_url="${HOST}:${INVENTORY_PORT}/api/v1/inventory"
-inventory_json=$(curl -sf "$inventory_url") || {
-  echo "Failed to fetch inventory from $inventory_url" >&2
-  exit 1
-}
-mapfile -t ITEMS < <(echo "$inventory_json" | python3 -c "import sys, json
-data = json.load(sys.stdin)
-if isinstance(data, list):
-    for entry in data:
-        name = entry.get('name')
-        if name:
-            print(name)")
-if [ ${#ITEMS[@]} -eq 0 ]; then
-  echo "Inventory is empty — restock first via POST $inventory_url/restock" >&2
-  exit 1
-fi
+ITEMS=("apple" "kiwi" "mango" "orange" "pear")
 
 # Calculate sleep time between requests
 SLEEP_TIME=$(awk -v rate="$RATE" 'BEGIN{print 1/rate}')
