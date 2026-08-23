@@ -2,7 +2,7 @@ import logging
 import os
 
 import dapr.ext.workflow as wf
-from flask import Flask, request
+from flask import Flask, jsonify, request
 
 import delivery
 
@@ -64,9 +64,23 @@ def activate():
 
 
 @app.route("/", methods=["GET"])
+def root():
+    """Answer Catalyst's app-endpoint validation probe.
+
+    Catalyst probes the root path of the app endpoint every few seconds,
+    marking the request with an `X-Diagridio-Validation` header. Health
+    reporting is `/health`; this exists so that probe gets a 200.
+    """
+    return '', 200
+
+
+@app.route("/health", methods=["GET"])
 @app.route("/healthz", methods=["GET"])
-def hello():
-    return f"Hello from {__name__}", 200
+def health_check():
+    return jsonify({
+        "service": "shipping",
+        "status": "healthy",
+    })
 
 
 def main():

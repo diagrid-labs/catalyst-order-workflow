@@ -10,7 +10,7 @@ import os
 from dataclasses import asdict
 
 import dapr.ext.workflow as wf
-from flask import Flask, request, url_for
+from flask import Flask, jsonify, request, url_for
 from markupsafe import escape
 
 import order as order_workflow
@@ -106,9 +106,23 @@ def approve_order(order_id):
 
 
 @app.route("/", methods=["GET"])
+def root():
+    """Answer Catalyst's app-endpoint validation probe.
+
+    Catalyst probes the root path of the app endpoint every few seconds,
+    marking the request with an `X-Diagridio-Validation` header. Health
+    reporting is `/health`; this exists so that probe gets a 200.
+    """
+    return '', 200
+
+
+@app.route("/health", methods=["GET"])
 @app.route("/healthz", methods=["GET"])
-def hello():
-    return f"Hello from {__name__}", 200
+def health_check():
+    return jsonify({
+        "service": "order-processor",
+        "status": "healthy",
+    })
 
 
 def main():

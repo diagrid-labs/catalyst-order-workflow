@@ -88,7 +88,7 @@ app.post('/' + TOPIC_NAME, (req, res) => {
 });
 
 // Health check endpoint
-app.get("/healthz", (req, res) => {
+app.get(["/health", "/healthz"], (req, res) => {
   console.log("Health check requested");
   return res.status(200).send(`Hello from Node.js server`);
 });
