@@ -1,8 +1,10 @@
 import logging
 import os
-import time
 
+import dapr.ext.workflow as wf
 from flask import Flask, request
+
+import delivery
 
 APP_PORT = os.getenv("APP_PORT", "3004")
 
@@ -10,16 +12,38 @@ app = Flask(__name__)
 
 is_deactivated = False
 
+DEACTIVATED_MESSAGE = "The shipping service is currently deactivated for routine maintenance."
+
 
 @app.route("/shipping/ship", methods=["POST"])
 def ship():
     if is_deactivated:
-        return "The shipping service is currently deactivated for routine maintenance.", 503
+        return DEACTIVATED_MESSAGE, 503
     logging.info(f"Shipping order: {request.json}")
+    return '', 200
 
-    # # Simulate work
-    # time.sleep(1)
 
+@app.route("/shipping/prepare", methods=["POST"])
+def prepare():
+    if is_deactivated:
+        return DEACTIVATED_MESSAGE, 503
+    logging.info(f"Preparing shipment: {request.json}")
+    return '', 200
+
+
+@app.route("/shipping/dispatch", methods=["POST"])
+def dispatch():
+    if is_deactivated:
+        return DEACTIVATED_MESSAGE, 503
+    logging.info(f"Dispatching shipment: {request.json}")
+    return '', 200
+
+
+@app.route("/shipping/deliver", methods=["POST"])
+def deliver():
+    if is_deactivated:
+        return DEACTIVATED_MESSAGE, 503
+    logging.info(f"Delivering shipment: {request.json}")
     return '', 200
 
 
@@ -46,8 +70,14 @@ def hello():
 
 
 def main():
-    # Start the Flask app server
-    app.run(port=APP_PORT, debug=True, use_reloader=False)
+    logging.info("Starting delivery workflow runtime...")
+    wf_runtime = wf.WorkflowRuntime()
+    delivery.register(wf_runtime)
+    wf_runtime.start()
+
+    app.run(host='0.0.0.0', port=APP_PORT, debug=False, use_reloader=False)
+
+    wf_runtime.shutdown()
 
 
 if __name__ == "__main__":

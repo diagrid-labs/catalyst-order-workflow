@@ -27,11 +27,14 @@ app = Flask(__name__)
 logger = logging.getLogger("inventory_service")
 
 INVENTORY_ITEMS = {
-    "orange": 1.50,
     "apple": 2.00,
-    "pear": 1.75,
     "kiwi": 3.00,
+    "mango": 1.25,
+    "orange": 1.50,
+    "pear": 1.75,
 }
+
+ITEMS=("apple" "kiwi" "mango" "orange" "pear")
 
 
 class InventoryItem:
@@ -243,8 +246,8 @@ def _confirm(d: DaprClient, order_id: str):
             return None, "not_found"
         if record["status"] == "sold":
             return record, None
-        if record["status"] == "released":
-            return record, "released"
+        if record["status"] in ("released", "returned"):
+            return record, "reversed"
 
         sold = {**record, "status": "sold", "sold_at": now_iso()}
         try:
@@ -271,6 +274,11 @@ def _confirm(d: DaprClient, order_id: str):
 def _release(d: DaprClient, order_id: str):
     """Give a pending reservation's stock back.
 
+    Only acts on a pending reservation. A sold one has to go back through
+    `_return` instead, and a record that has already been reversed either way
+    is left alone, so the two paths can both sit on a caller's compensation
+    list and exactly one of them will credit the stock.
+
     Returns (remaining, error) with error one of None, "not_found" (nothing
     was ever reserved for this order, or the record has expired), "sold",
     "missing_sku" or "conflict". `remaining` is the quantity after the credit,
@@ -284,7 +292,7 @@ def _release(d: DaprClient, order_id: str):
         record, etag = _read_reservation(d, order_id)
         if record is None:
             return None, "not_found"
-        if record["status"] == "released":
+        if record["status"] in ("released", "returned"):
             return None, None
         if record["status"] == "sold":
             return None, "sold"
@@ -383,6 +391,47 @@ def reserve_inventory():
         )
 
 
+def _return(d: DaprClient, order_id: str):
+    """Put a sold order's stock back on the shelf.
+
+    The counterpart to `_release` for an order that got as far as being sold
+    and then fell over — an undeliverable shipment, say. Only acts on a sold
+    reservation: a pending one belongs to `_release`, and an already-reversed
+    one is left alone.
+
+    The sale itself is not retracted. The customer wanted the goods, so the
+    demand was real and the forecast should keep seeing it; what changed is
+    only that the units are back in stock.
+
+    Returns (remaining, error) with error one of None, "not_found",
+    "not_sold", "missing_sku" or "conflict". `remaining` is the quantity after
+    the credit, or None when there was nothing to do.
+    """
+    for _ in range(RESERVE_MAX_RETRIES):
+        record, etag = _read_reservation(d, order_id)
+        if record is None:
+            return None, "not_found"
+        if record["status"] == "returned":
+            return None, None
+        if record["status"] != "sold":
+            return None, "not_sold"
+
+        returned = {**record, "status": "returned", "returned_at": now_iso()}
+        try:
+            _write_reservation(d, returned, TERMINAL_TTL_SECONDS, etag=etag)
+        except grpc.RpcError as err:
+            logger.info(f"Retrying return for {order_id}: {err.details()}")
+            continue
+
+        remaining, err = _adjust_stock(d, record["sku"], int(record["qty"]))
+        if err == "not_found":
+            return None, "missing_sku"
+        if err is not None:
+            return None, err
+        return remaining, None
+    return None, "conflict"
+
+
 def _order_id_from_request():
     """Pull the order id out of a confirm/release body, or return an error
     response. Both endpoints accept the full order and ignore the extra fields.
@@ -419,9 +468,9 @@ def confirm_inventory():
                 return jsonify({"id": order_id, "success": False,
                                 "message": "No reservation to confirm",
                                 "remaining": None})
-            if err == "released":
+            if err == "reversed":
                 return jsonify({"id": order_id, "success": False,
-                                "message": "Reservation was already released",
+                                "message": "Reservation was already reversed",
                                 "remaining": None})
             if err == "conflict":
                 return make_response(
@@ -488,6 +537,54 @@ def release_inventory():
         return make_response(
             jsonify({"error": "Internal Server Error",
                      "message": "Failed to release inventory"}), 500
+        )
+
+
+@app.route("/api/v1/inventory/return", methods=["POST"])
+def return_inventory():
+    """Put a sold order's stock back — the compensation for a failed delivery.
+
+    Idempotent by order id, and a no-op for an order that was never sold, so
+    it is safe to call alongside `/release`. Body: `{id: <order_id>}`.
+    """
+    order_id, err_resp = _order_id_from_request()
+    if err_resp is not None:
+        return err_resp
+
+    logger.info(f"Processing inventory return for order {order_id}")
+
+    try:
+        with DaprClient() as d:
+            new_stock, err = _return(d, order_id)
+            if err == "conflict":
+                return make_response(
+                    jsonify({"id": order_id, "success": False,
+                             "message": "Too much contention; please retry"}),
+                    503,
+                )
+            if err == "missing_sku":
+                return make_response(
+                    jsonify({"id": order_id, "success": False,
+                             "message": "Sold sku no longer in catalog"}),
+                    409,
+                )
+            if err in ("not_found", "not_sold"):
+                return jsonify({
+                    "id": order_id, "success": True,
+                    "message": "Nothing to return",
+                    "remaining": None,
+                })
+            return jsonify({
+                "id": order_id, "success": True,
+                "message": "Stock returned" if new_stock is not None
+                           else "Nothing to return",
+                "remaining": new_stock,
+            })
+    except grpc.RpcError as err:
+        logger.error(f"Error returning inventory: {err.details()}")
+        return make_response(
+            jsonify({"error": "Internal Server Error",
+                     "message": "Failed to return inventory"}), 500
         )
 
 

@@ -50,6 +50,12 @@ GET http://localhost:3002/api/v1/inventory/sales/history?sku=orange
 ### fails at the shipping step, and the workflow unwinds in reverse: the payment
 ### is refunded and the reserved stock goes back. Check the inventory before and
 ### after to see the quantity restored.
+###
+### Deactivating while an order is in transit breaks the delivery instead: the
+### order waits DISPATCH_SECONDS between dispatch and delivery, so submitting an
+### order and deactivating during that window fails the delivery workflow. The
+### sale is already recorded by then, so the goods are restocked rather than
+### released -- the quantity comes back but the sales history keeps the entry.
 POST http://localhost:3004/shipping/deactivate
 
 ### Reactivate shipping

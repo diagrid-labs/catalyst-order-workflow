@@ -86,6 +86,7 @@ User → POST /agent/run                              (inventory-agent — provi
 | `POST`   | `/api/v1/inventory/reserve`               | provisionally take `qty` units of one SKU out of stock (default 1) — etag-guarded decrement plus a `pending` reservation record; no sale is recorded |
 | `POST`   | `/api/v1/inventory/confirm`               | turn an order's reservation into a sale; publishes to the `sales` topic. Body `{id}` |
 | `POST`   | `/api/v1/inventory/release`               | give a pending reservation's stock back. Body `{id}` |
+| `POST`   | `/api/v1/inventory/return`                | put a sold order's stock back after a failed delivery; the sale itself stands. Body `{id}` |
 | `POST`   | `/sales`                                  | subscriber for the `sales` topic — appends the sale to `sales:<sku>` |
 | `POST`   | `/api/v1/inventory/restock`               | demo reset — destructively set every SKU's quantity to 100 (prices are not touched) |
 | `POST`   | `/api/v1/inventory/reposition`            | additive `{items: {sku: qty}}` — adds to quantity only (prices are not touched) |
@@ -141,7 +142,9 @@ forecasts via the two `GET` endpoints above.
 ### Reservation state
 One key kind beyond the per-SKU quantity: `reservation:<order_id>`, holding
 `{order_id, status, sku, qty, remaining, reserved_at}` where `status` is
-`pending`, `sold` or `released`. Pending records outlive the longest possible
+`pending`, `sold`, `released` or `returned`. `/release` acts only on a pending
+record and `/return` only on a sold one, so both can sit on a caller's
+compensation list and exactly one will credit the stock back. Pending records outlive the longest possible
 order workflow (48h, since the approval gate alone allows 24h); terminal ones
 expire after an hour, as their only remaining job is to absorb a retried call.
 

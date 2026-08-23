@@ -1,62 +1,35 @@
 import json
 import logging
 import os
-import random
-import string
 import dapr.ext.workflow as wf
 from dapr.clients import DaprClient
 from flask import Flask, request, url_for
 from markupsafe import escape
-from dataclasses import dataclass, asdict
+from dataclasses import asdict
 from datetime import timedelta
 
+import notifications
+from models import (
+    Approval,
+    InventoryResult,
+    Order,
+    OrderResult,
+    PaymentResult,
+    to_order,
+)
+
 APP_PORT = os.getenv("APP_PORT", "3006")
-PUBSUB_NAME = os.getenv("PUBSUB_NAME", "pubsub")
-TOPIC_NAME = os.getenv("TOPIC_NAME", "notifications")
 
 APPROVAL_THRESHOLD = 1000.0
 APPROVAL_TIMEOUT = timedelta(hours=24)
 
+# The delivery workflow is hosted by the shipping service, which owns
+# fulfilment. It is called by name across the app boundary.
+SHIPPING_APP_ID = os.getenv("SHIPPING_APP_ID", "shipping")
+DELIVERY_WORKFLOW = "delivery_workflow"
+
 app = Flask(__name__)
 
-
-@dataclass
-class Order:
-    id: str
-    customer: str
-    item: str
-    total: float = 0.0
-    qty: int = 1
-
-    def __post_init__(self):
-        if not self.id:
-            raise ValueError("id required")
-        if not self.customer:
-            raise ValueError("customer required")
-        if not self.item:
-            raise ValueError("item required")
-        if self.qty < 1:
-            raise ValueError("qty must be >= 1")
-        if self.total < 0:
-            raise ValueError("total must be >= 0")
-
-    @classmethod
-    def new(cls, *, customer: str, item: str, total: float = 0.0, qty: int = 1) -> "Order":
-        """Build a new Order with a freshly generated id.
-
-        Reconstructing an existing order (e.g. from workflow state) should use
-        the regular constructor with `id` supplied.
-        """
-        if not customer:
-            raise ValueError("customer required")
-        suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
-        return cls(
-            id=f"order_{customer.lower()}_{suffix}",
-            customer=customer,
-            item=item,
-            total=total,
-            qty=qty,
-        )
 
 class OrderFailed(Exception):
     """An order that cannot go through for a business reason: out of stock,
@@ -67,49 +40,6 @@ class OrderFailed(Exception):
     result rather than failing, which is how a declined order stays
     distinguishable from a broken one.
     """
-
-
-@dataclass
-class Approval:
-    approver: str
-    approved: bool
-
-    def __post_init__(self):
-        if not self.approver:
-            raise ValueError("approver required")
-        if not isinstance(self.approved, bool):
-            raise ValueError("approved must be a boolean")
-
-@dataclass
-class OrderResult:
-    id: str
-    success: bool
-    message: str
-
-@dataclass
-class InventoryResult:
-    id: str
-    success: bool
-    message: str
-    remaining: int | None = None
-
-@dataclass
-class PaymentResult:
-    id: str
-    success: bool
-    message: str
-
-
-def _to_order(value) -> Order:
-    """Reconstruct an Order at an activity boundary.
-
-    The Dapr workflow SDK serializes dataclass inputs to JSON and
-    deserializes them back as types.SimpleNamespace, so the `order: Order`
-    annotation on activity functions is a hint, not a runtime guarantee.
-    Rebuilding the dataclass here makes the hint honest and lets us use
-    asdict() consistently for re-serialization.
-    """
-    return value if isinstance(value, Order) else Order(**vars(value))
 
 
 # Dapr Workflow Definition for Order Processing
@@ -123,6 +53,12 @@ def process_order_workflow(ctx: wf.DaprWorkflowContext, order: Order):
     compensations = []
 
     try:
+        custom_status = {
+            "order": order.id,
+            "customer": order.customer,
+        }
+        ctx.set_custom_status(json.dumps(custom_status))
+
         yield ctx.call_activity(notify, input=f"Processing order for {order.customer}. Item: {order.item}, Qty: {order.qty}")
 
         # If the order didn't come with an explicit total, price it from the
@@ -187,6 +123,23 @@ def process_order_workflow(ctx: wf.DaprWorkflowContext, order: Order):
         except Exception as e:
             yield ctx.call_activity(notify, input=f"Could not confirm reservation: {e}")
 
+        # Fulfil the order. The child runs prepare -> dispatch -> deliver with
+        # the transit wait in between, so the order stays running until the
+        # goods arrive. A failure in there unwinds the compensations like any
+        # other step: the goods go back on the shelf, the customer is refunded.
+        compensations.append(return_inventory)
+        yield ctx.call_child_workflow(
+            DELIVERY_WORKFLOW,
+            input={
+                "order_id": order.id,
+                "customer": order.customer,
+                "item": order.item,
+                "qty": order.qty,
+            },
+            instance_id=f"delivery_{order.id}",
+            app_id=SHIPPING_APP_ID,
+        )
+
         yield ctx.call_activity(notify, input=f"Order processed for {order.customer}. Item: {order.item}, Qty: {order.qty}, Total: {order.total}")
 
         return OrderResult(order.id, True, "Order processed")
@@ -201,18 +154,14 @@ def process_order_workflow(ctx: wf.DaprWorkflowContext, order: Order):
         raise
 
 def notify(ctx: wf.WorkflowActivityContext, message: str):
+    """Report progress against the order this workflow is processing."""
     logging.info(f"Sending notification: {message}")
-    with DaprClient() as d:
-        d.publish_event(PUBSUB_NAME, TOPIC_NAME, json.dumps({
-            "order_id": ctx.workflow_id,
-            "message": message,
-            "data-content-type": "application/json"
-        }))
+    notifications.publish(ctx.workflow_id, message)
 
 
 def price_order(_, order: Order) -> float:
     """Look up the unit price for `order.item` and return price * qty."""
-    order = _to_order(order)
+    order = to_order(order)
     logging.info(f"Pricing order from inventory catalog: {order}")
     with DaprClient() as d:
         resp = d.invoke_method("inventory", "api/v1/inventory", http_verb="GET")
@@ -228,7 +177,7 @@ def price_order(_, order: Order) -> float:
 
 
 def reserve_inventory(_, order: Order) -> InventoryResult:
-    order = _to_order(order)
+    order = to_order(order)
     logging.info(f"Reserving inventory for order: {order}")
     with DaprClient() as d:
         resp = d.invoke_method("inventory", "api/v1/inventory/reserve", http_verb="POST", data=json.dumps(asdict(order)))
@@ -245,7 +194,7 @@ def confirm_inventory(_, order: Order) -> InventoryResult:
     Runs once the order has shipped; until it does, the reserved stock carries
     no sales record.
     """
-    order = _to_order(order)
+    order = to_order(order)
     logging.info(f"Confirming inventory reservation for order: {order}")
     with DaprClient() as d:
         resp = d.invoke_method(
@@ -259,6 +208,30 @@ def confirm_inventory(_, order: Order) -> InventoryResult:
         return inventory_result
 
 
+def return_inventory(_, order: Order):
+    """Best-effort compensation for a delivery that never arrived.
+
+    Puts a sold order's stock back on the shelf. Nothing happens if the order
+    was never sold — `release_inventory` covers that case — so both can sit on
+    the compensation list and exactly one of them credits the stock. Errors are
+    logged, not raised, so compensation never masks the original failure.
+    """
+    order = to_order(order)
+    logging.info(f"Returning inventory for order: {order}")
+    try:
+        with DaprClient() as d:
+            resp = d.invoke_method(
+                "inventory", "api/v1/inventory/return",
+                http_verb="POST", data=json.dumps(asdict(order)),
+            )
+            if resp.status_code != 200:
+                logging.warning(
+                    f"Inventory return returned {resp.status_code} for {order.id}"
+                )
+    except Exception as e:
+        logging.warning(f"Inventory return call failed for {order.id}: {e}")
+
+
 def release_inventory(_, order: Order):
     """Best-effort compensation for `reserve_inventory`.
 
@@ -266,7 +239,7 @@ def release_inventory(_, order: Order):
     which case the inventory service treats this as a no-op. Errors are logged,
     not raised, so compensation never masks the original failure.
     """
-    order = _to_order(order)
+    order = to_order(order)
     logging.info(f"Releasing inventory for order: {order}")
     try:
         with DaprClient() as d:
@@ -282,15 +255,18 @@ def release_inventory(_, order: Order):
         logging.warning(f"Inventory release call failed for {order.id}: {e}")
 
 def submit_order_to_shipping(_, order: Order):
-    order = _to_order(order)
+    order = to_order(order)
     logging.info(f"Submitting order to shipping: {order}")
     with DaprClient() as d:
-        resp = d.invoke_method("shipping", "shipping/ship", http_verb="POST", data=json.dumps(asdict(order)))
+        resp = d.invoke_method(
+            "shipping", "shipping/ship",
+            http_verb="POST", data=json.dumps(asdict(order)),
+        )
         if resp.status_code != 200:
             raise Exception(f"Error calling shipping service: {resp.status_code}: {resp.text()}")
 
 def submit_payment(_, order: Order) -> PaymentResult:
-    order = _to_order(order)
+    order = to_order(order)
     logging.info(f"Submitting payment for order: {order}")
     with DaprClient() as d:
         resp = d.invoke_method("payments", "api/v1/payments", http_verb="POST", data=json.dumps(asdict(order)))
@@ -310,7 +286,7 @@ def refund_payment(_, order: Order):
     raised: a failure here must not stop the compensations behind it from
     running, nor mask the failure that triggered the unwind.
     """
-    order = _to_order(order)
+    order = to_order(order)
     logging.info(f"Refunding payment for order: {order}")
     try:
         with DaprClient() as d:
@@ -425,6 +401,7 @@ def main():
     wf_runtime.register_activity(price_order)
     wf_runtime.register_activity(reserve_inventory)
     wf_runtime.register_activity(confirm_inventory)
+    wf_runtime.register_activity(return_inventory)
     wf_runtime.register_activity(release_inventory)
     wf_runtime.register_activity(submit_payment)
     wf_runtime.register_activity(submit_order_to_shipping)
