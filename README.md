@@ -1,16 +1,16 @@
-# Catalyst Order Processing Workflow
+# Diagrid Order Processing Workflow
 
-This solution demonstrates the capabilities provided by all five Catalyst APIs through a python-based order processing workflow. The end-to-end solution is comprised of five services:
+This solution demonstrates the capabilities provided by all five Diagrid APIs through a python-based order processing workflow. The end-to-end solution is comprised of five services:
 
-- **order-processor**: Contains the order process workflow definition and all associated activity methods which will be executed as part of the workflow sequence using the Catalyst Workflow API.
-- **inventory**: Receives direct invocation requests sent by the order-processor using the Invocation API to manage inventory state in the Diagrid KV Store through the Catalyst State API.
+- **order-processor**: Contains the order process workflow definition and all associated activity methods which will be executed as part of the workflow sequence using the Diagrid Workflow API.
+- **inventory**: Receives direct invocation requests sent by the order-processor using the Invocation API to manage inventory state in the Diagrid KV Store through the Diagrid State API.
 - **notifications**: Subscribes to messages published by the order-processor using the Pub/Sub API and subsequently displays those messages through a simple JavaScript user interface.
 - **shipping**: Receives direct invocation requests sent by the order-processor using the Invocation API to simulate the scheduling of order shipments.
 - **payments**: Receives direct invocation requests sent by the order-processor using the Invocation API to mock the processing of order payments.
 
 ## Prerequisites
-- [Sign up](https://catalyst.diagrid.io) for Diagrid Catalyst
-- Install latest [Diagrid CLI](https://docs.diagrid.io/catalyst/references/cli-reference/intro#installing-the-cli)
+- [Sign up](https://catalyst.diagrid.io) for Diagrid
+- Install latest [Diagrid CLI](https://docs.diagrid.io/references/diagrid/diagrid-cli-intro/#installing-the-cli)
 - Install [Python3](https://www.python.org/downloads/)
 
 ### Prepare applications
@@ -27,7 +27,7 @@ Run the script:
 ./build-apps.sh
 ```
 
-## Deploy Catalyst resources
+## Deploy Diagrid resources
 
 Replace `unique-project-name` with a name for your workflow project
 
@@ -35,7 +35,7 @@ Replace `unique-project-name` with a name for your workflow project
 export WORKFLOW_PROJECT_NAME="unique-project-name"
 ```
 
-Execute the following command to run your applications locally and create the dependent Catalyst resources:
+Execute the following command to run your applications locally and create the dependent Diagrid resources:
 
 ```bash
 diagrid dev run -f dapr.yaml --project $WORKFLOW_PROJECT_NAME
